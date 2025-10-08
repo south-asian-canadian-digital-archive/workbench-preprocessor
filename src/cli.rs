@@ -25,6 +25,19 @@ pub struct Cli {
     #[arg(short, long)]
     pub output: Option<String>,
 
+    /// Directory to write processed and generated output files
+    #[arg(long, value_name = "DIR")]
+    pub output_dir: Option<String>,
+
+    /// File name or path for the generated items CSV when using --full
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "full",
+        conflicts_with = "command"
+    )]
+    pub items_output: Option<String>,
+
     /// Only run the specified modifiers (overrides default behavior)
     #[arg(long, value_enum)]
     pub only_run: Vec<Modifier>,

@@ -19,6 +19,8 @@ This project ships a single CLI binary, **`organise`**, which can:
 - **Built-in Modifiers**: Ready-to-use modifiers for common tasks
 - **Google Sheets Integration**: Process CSV data directly from Google Sheets URLs
 - **Comprehensive Statistics**: Detailed processing statistics and validation reporting
+- **Container Row Filtering**: Automatically skips `accessIdentifier` values ending with `_00` or `_000`
+- **Flexible Output Control**: Override filenames or route artefacts into a dedicated output directory
 - **Command Line Interface**: Easy-to-use CLI for batch processing
 - **Error Handling**: Robust error handling with context information
 
@@ -55,6 +57,12 @@ The binary will be available at `target/release/organise`.
 
 # End-to-end with node reference prefilled
 ./target/release/organise --full input.csv --node 19
+
+# Place outputs in a dedicated directory (filenames inferred)
+./target/release/organise --full input.csv --output-dir ./out
+
+# Override processed/items filenames during a full run
+./target/release/organise --full input.csv --output processed.csv --items-output items.csv
 ```
 
 ## Command Line Usage
@@ -79,6 +87,13 @@ The binary will be available at `target/release/organise`.
 
 # Process and immediately build items CSV alongside the result
 ./target/release/organise --full input.csv
+
+# Send all artefacts to a specific directory (filenames inferred)
+./target/release/organise input.csv --output-dir ./out
+
+# Full run with custom processed/items filenames
+./target/release/organise --full input.csv --output-dir ./out \
+    --output processed.csv --items-output items.csv
 ```
 
 ### Process Google Sheets
@@ -90,6 +105,10 @@ The binary will be available at `target/release/organise`.
 # Custom output filename
 ./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0' \
     --output custom-output.csv
+
+# Drop processed and items files in a specific directory (full run)
+./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit' \
+    --full --output-dir ./out
 
 # Apply only certain modifiers and show stats
 ./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit' \
@@ -158,11 +177,13 @@ file_identifier,title,# of items,field_member_of
 
 - `--url <URL>`: Treat the input as a Google Sheet (auto-converted to CSV).
 - `--output <FILE>`: Override the generated output filename.
+- `--output-dir <DIR>`: Write all generated files into the specified directory (filenames inferred when relative).
 - `--only-run <MODIFIER>`: Only apply the specified modifier(s); repeatable.
 - `--ignore-run <MODIFIER>`: Skip the specified modifier(s); repeatable.
 - `--stats`: Print detailed processing statistics after the run.
 - `--full`: After processing, immediately generate the items summary next to the output CSV.
 - `-n, --node <NODE>` (_generate-items_ or `--full`): Populate the `field_member_of` column with the provided value.
+- `--items-output <FILE>` (_requires `--full`_): Override the filename (or path) for the generated items CSV.
 
 #### Output Filename Generation
 
@@ -170,6 +191,8 @@ file_identifier,title,# of items,field_member_of
   - `data.csv` → `data-modified.csv`
   - `path/to/file.xlsx` → `path/to/file-modified.xlsx`
   - `document` → `document-modified.csv`
+- **Output directories**: When `--output-dir` is provided, relative output filenames (including defaults) are written inside that directory. Absolute paths always win and ignore the directory override.
+- **Items CSV**: During `--full`, `--items-output` overrides the generated items filename. Otherwise, it inherits the processed filename with `-items` appended, respecting `--output-dir` when applicable.
 
 - **For Google Sheets**: If no output is specified, defaults to `sheets-output-modified.csv`
 
@@ -195,15 +218,17 @@ Applying parent_id modifier
 Applying file_extension modifier
 Processing complete!
 Processed 1000 rows
+Rows skipped: 12
 Modified 2000 cells
 Output written to: data-modified.csv
 
 Detailed Statistics:
 - Total rows processed: 1000
+- Rows skipped: 12
 - Cells modified: 2000
 - Validation failures: 0
-- Columns processed: 2
-  Columns: parent_id, file
+- Columns processed: 3
+    Columns: accessIdentifier, parent_id, file
 
 $ ./target/release/organise file -i data.csv --only-run parent-id
 
@@ -217,6 +242,8 @@ Output written to: data-modified.csv
 ```
 
 ## Built-in Modifiers
+
+Every run automatically includes a lightweight validator for the `accessIdentifier` column before other modifiers execute. Additional modifiers can be toggled with `--only-run` / `--ignore-run` as needed.
 
 ### ParentIdModifier
 Extracts parent IDs from `accessIdentifier` columns by removing the last underscore segment.
@@ -241,6 +268,9 @@ Creates file paths using parent ID directories and file extensions from other co
 
 **Placeholder Handling**: If `file`, `file_extension`, or `accessIdentifier` contain `#VALUE!`, the row is left unchanged for that modifier, the offending cell is cleared, and a warning is emitted.
 - Handles existing file extensions by replacing them
+
+### AccessIdentifierValidator (built-in)
+Validates the `accessIdentifier` column before other modifiers run. Empty values are permitted, but identifiers ending with `_00` or `_000` indicate container or collection records and cause the entire row to be skipped. Skipped rows appear in the processing summary so you can audit how many container records were removed.
 
 ## Library Usage
 
@@ -378,12 +408,15 @@ The `ProcessingStats` struct provides detailed information about the processing 
 
 ```rust
 pub struct ProcessingStats {
-    pub total_rows: usize,           // Total number of data rows processed
-    pub cells_modified: usize,       // Number of cells that were modified
-    pub validation_failures: usize, // Number of validation failures
+    pub total_rows: usize,            // Data rows written to the output
+    pub skipped_rows: usize,          // Rows omitted by validators
+    pub cells_modified: usize,        // Number of cells that were modified
+    pub validation_failures: usize,   // Number of validation failures
     pub columns_processed: HashSet<String>, // Set of columns that were processed
 }
 ```
+
+`skipped_rows` increases whenever a validator rejects the row (for example, container-level access identifiers such as `2024_19_01_000`). Those rows never reach the output CSV, keeping downstream items generation focused on item-level records.
 
 ### Logging Validation Failures
 

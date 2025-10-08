@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use csv::{Reader, Writer};
 use log::warn;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 
 fn normalize_cell(value: &str) -> &str {
@@ -67,14 +67,18 @@ impl<'a> RowContext<'a> {
 }
 
 pub struct CsvModifier {
-    column_modifiers: HashMap<String, Box<dyn ColumnModifier>>,
+    column_modifiers: BTreeMap<String, Box<dyn ColumnModifier>>,
 }
 
 impl CsvModifier {
     pub fn new() -> Self {
-        Self {
-            column_modifiers: HashMap::new(),
-        }
+        let mut column_modifiers: BTreeMap<String, Box<dyn ColumnModifier>> = BTreeMap::new();
+        column_modifiers.insert(
+            "accessIdentifier".to_string(),
+            Box::new(AccessIdentifierValidator),
+        );
+
+        Self { column_modifiers }
     }
 
     pub fn add_column_modifier<M>(mut self, column: &str, modifier: M) -> Self
@@ -121,6 +125,7 @@ impl CsvModifier {
         for (row_idx, result) in reader.records().enumerate() {
             let record = result?;
             let mut row_values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
+            let mut row_valid = true;
 
             for (column_name, modifier) in &self.column_modifiers {
                 if let Some(&col_index) = header_map.get(column_name) {
@@ -239,9 +244,22 @@ impl CsvModifier {
                                 );
                                 validation_logging_suppressed = true;
                             }
+
+                            if column_name == "accessIdentifier" {
+                                row_valid = false;
+                                break;
+                            }
                         }
                     }
                 }
+                if !row_valid {
+                    break;
+                }
+            }
+
+            if !row_valid {
+                stats.skipped_rows += 1;
+                continue;
             }
 
             writer.write_record(&row_values)?;
@@ -262,6 +280,7 @@ pub struct ProcessingStats {
     pub total_rows: usize,
     pub cells_modified: usize,
     pub validation_failures: usize,
+    pub skipped_rows: usize, // Track skipped rows
     pub columns_processed: std::collections::HashSet<String>,
 }
 
@@ -271,8 +290,31 @@ impl ProcessingStats {
             total_rows: 0,
             cells_modified: 0,
             validation_failures: 0,
+            skipped_rows: 0, // Initialize skipped_rows
             columns_processed: std::collections::HashSet::new(),
         }
+    }
+}
+
+pub struct AccessIdentifierValidator;
+
+impl ColumnModifier for AccessIdentifierValidator {
+    fn modify(&self, value: &str, _row: &RowContext) -> String {
+        normalize_cell(value).to_string()
+    }
+
+    fn description(&self) -> &str {
+        "Validates accessIdentifier for item-level suitability"
+    }
+
+    fn validate(&self, value: &str, _row: &RowContext) -> bool {
+        let clean = normalize_cell(value);
+
+        if clean.is_empty() {
+            return true;
+        }
+
+        !(clean.ends_with("_00") || clean.ends_with("_000"))
     }
 }
 

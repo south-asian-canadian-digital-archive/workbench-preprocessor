@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use env_logger::Env;
 use organise::{
@@ -6,6 +6,7 @@ use organise::{
     Modifier, ParentIdModifier, ProcessingStats,
 };
 use std::collections::HashSet;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use tempfile::NamedTempFile;
@@ -65,31 +66,50 @@ fn main() -> Result<()> {
         }
         None => match (cli.input.as_deref(), cli.url.as_deref()) {
             (Some(input_path), None) => {
-                let output_path = cli
-                    .output
-                    .clone()
-                    .unwrap_or_else(|| generate_output_filename(input_path));
+                let processed_output = determine_processed_output_path(
+                    input_path,
+                    cli.output.as_deref(),
+                    cli.output_dir.as_deref(),
+                )?;
+
                 process_file(
                     input_path,
-                    &output_path,
+                    &processed_output,
                     &cli.only_run,
                     &cli.ignore_run,
                     cli.stats,
                 )?;
 
                 if cli.full {
-                    run_full_pipeline(&output_path, cli.node.as_deref())?;
+                    let items_output = determine_items_output_path(
+                        &processed_output,
+                        cli.items_output.as_deref(),
+                        cli.output_dir.as_deref(),
+                    )?;
+                    run_full_pipeline(&processed_output, Some(&items_output), cli.node.as_deref())?;
                 }
             }
             (None, Some(url)) => {
-                let output_path = cli
-                    .output
-                    .clone()
-                    .unwrap_or_else(generate_sheets_output_filename);
-                process_sheets(url, &output_path, &cli.only_run, &cli.ignore_run, cli.stats)?;
+                let processed_output = determine_processed_output_path_for_sheets(
+                    cli.output.as_deref(),
+                    cli.output_dir.as_deref(),
+                )?;
+
+                process_sheets(
+                    url,
+                    &processed_output,
+                    &cli.only_run,
+                    &cli.ignore_run,
+                    cli.stats,
+                )?;
 
                 if cli.full {
-                    run_full_pipeline(&output_path, cli.node.as_deref())?;
+                    let items_output = determine_items_output_path(
+                        &processed_output,
+                        cli.items_output.as_deref(),
+                        cli.output_dir.as_deref(),
+                    )?;
+                    run_full_pipeline(&processed_output, Some(&items_output), cli.node.as_deref())?;
                 }
             }
             (Some(_), Some(_)) => {
@@ -285,9 +305,18 @@ fn generate_items_from_url(url: &str, output: &str, node: Option<&str>) -> Resul
     Ok(())
 }
 
-fn run_full_pipeline(processed_path: &str, node: Option<&str>) -> Result<()> {
-    let items_output = generate_items_output_filename(processed_path);
-    generate_items_from_path(processed_path, &items_output, node)
+fn run_full_pipeline(
+    processed_path: &str,
+    items_output: Option<&str>,
+    node: Option<&str>,
+) -> Result<()> {
+    let items_output_path = if let Some(path) = items_output {
+        path.to_string()
+    } else {
+        generate_items_output_filename(processed_path)
+    };
+
+    generate_items_from_path(processed_path, &items_output_path, node)
 }
 
 fn print_item_generation_summary(stats: &ItemGenerationStats, output: &str) {
@@ -307,6 +336,7 @@ fn print_item_generation_summary(stats: &ItemGenerationStats, output: &str) {
 fn print_detailed_stats(stats: &ProcessingStats) {
     println!("\nDetailed Statistics:");
     println!("- Total rows processed: {}", stats.total_rows);
+    println!("- Rows skipped: {}", stats.skipped_rows);
     println!("- Cells modified: {}", stats.cells_modified);
     println!("- Validation failures: {}", stats.validation_failures);
     println!("- Columns processed: {}", stats.columns_processed.len());
@@ -321,5 +351,136 @@ fn print_detailed_stats(stats: &ProcessingStats) {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    }
+}
+
+fn determine_processed_output_path(
+    input_path: &str,
+    explicit_output: Option<&str>,
+    output_dir: Option<&str>,
+) -> Result<String> {
+    if let Some(path) = explicit_output {
+        return finalize_output_path(path, output_dir);
+    }
+
+    let default_path = generate_output_filename(input_path);
+    if let Some(dir) = output_dir {
+        if let Some(file_name) = Path::new(&default_path).file_name() {
+            let file_name_owned = file_name.to_string_lossy().into_owned();
+            return finalize_output_path(&file_name_owned, Some(dir));
+        }
+    }
+
+    Ok(default_path)
+}
+
+fn determine_processed_output_path_for_sheets(
+    explicit_output: Option<&str>,
+    output_dir: Option<&str>,
+) -> Result<String> {
+    if let Some(path) = explicit_output {
+        return finalize_output_path(path, output_dir);
+    }
+
+    let default = generate_sheets_output_filename();
+    finalize_output_path(&default, output_dir)
+}
+
+fn determine_items_output_path(
+    processed_output: &str,
+    explicit_output: Option<&str>,
+    output_dir: Option<&str>,
+) -> Result<String> {
+    if let Some(path) = explicit_output {
+        return finalize_output_path(path, output_dir);
+    }
+
+    let default_path = generate_items_output_filename(processed_output);
+
+    if let Some(parent) = Path::new(&default_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create output directory for items file: {}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(default_path)
+}
+
+fn finalize_output_path(path: &str, output_dir: Option<&str>) -> Result<String> {
+    let candidate = Path::new(path);
+
+    if candidate.is_absolute()
+        || candidate
+            .parent()
+            .map(|p| !p.as_os_str().is_empty())
+            .unwrap_or(false)
+    {
+        if let Some(parent) = candidate.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create output directory: {}", parent.display())
+                })?;
+            }
+        }
+        return Ok(candidate.to_string_lossy().into_owned());
+    }
+
+    if let Some(dir) = output_dir {
+        let dir_path = Path::new(dir);
+        fs::create_dir_all(dir_path).with_context(|| {
+            format!("Failed to create output directory: {}", dir_path.display())
+        })?;
+        return Ok(dir_path.join(candidate).to_string_lossy().to_string());
+    }
+
+    Ok(path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use tempfile::tempdir;
+
+    #[test]
+    fn processed_output_uses_output_dir_when_unspecified() -> Result<()> {
+        let temp = tempdir()?;
+        let output_dir = temp.path().join("outputs");
+        let path = determine_processed_output_path(
+            "/data/source.csv",
+            None,
+            Some(output_dir.to_str().unwrap()),
+        )?;
+
+        assert!(path.ends_with("source-modified.csv"));
+        assert!(Path::new(&path).starts_with(&output_dir));
+        assert!(output_dir.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn finalize_output_respects_absolute_paths() -> Result<()> {
+        let temp = tempdir()?;
+        let absolute = temp.path().join("custom.csv");
+        let resolved = finalize_output_path(absolute.to_str().unwrap(), Some("ignored"))?;
+        assert_eq!(Path::new(&resolved), absolute);
+        assert!(absolute.parent().unwrap().exists());
+        Ok(())
+    }
+
+    #[test]
+    fn items_output_defaults_to_processed_directory() -> Result<()> {
+        let temp = tempdir()?;
+        let processed = temp.path().join("processed.csv");
+        fs::write(&processed, b"input")?;
+        let items = determine_items_output_path(processed.to_str().unwrap(), None, None)?;
+        assert!(items.ends_with("processed-items.csv"));
+        assert!(Path::new(&items).parent().unwrap().exists());
+        Ok(())
     }
 }

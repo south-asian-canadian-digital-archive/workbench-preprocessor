@@ -41,9 +41,10 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(stats.total_rows, 3);
     assert_eq!(stats.cells_modified, 6); // 3 rows × 2 columns
     assert_eq!(stats.validation_failures, 0);
-    assert_eq!(stats.columns_processed.len(), 2);
+    assert_eq!(stats.columns_processed.len(), 3);
     assert!(stats.columns_processed.contains("parent_id"));
     assert!(stats.columns_processed.contains("file"));
+    assert!(stats.columns_processed.contains("accessIdentifier"));
 
     // Verify output content
     let output_content = std::fs::read_to_string(&output_path)?;
@@ -220,6 +221,36 @@ foo bar,another description,category2
     Ok(())
 }
 
+/// Ensure rows with container-style access identifiers are skipped
+#[test]
+fn test_rows_with_zero_suffix_access_identifier_are_skipped(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let csv_content = r#"accessIdentifier,file,file_extension,parent_id,title
+2024_19_01_000,document,pdf,,Container Record
+2024_19_01_001,document,pdf,,Child Record"#;
+
+    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
+    let output_path = format!("{}_output.csv", input_path);
+
+    let modifier = CsvModifier::new()
+        .add_column_modifier("parent_id", ParentIdModifier)
+        .add_column_modifier("file", FileExtensionModifier);
+
+    let stats = modifier.process_file(&input_path, &output_path)?;
+
+    assert_eq!(stats.skipped_rows, 1);
+    assert_eq!(stats.total_rows, 1);
+    assert_eq!(stats.cells_modified, 2);
+    assert_eq!(stats.validation_failures, 1);
+
+    let output_content = std::fs::read_to_string(&output_path)?;
+    assert!(!output_content.contains("Container Record"));
+    assert!(output_content.contains("Child Record"));
+    assert!(output_content.contains("2024_19_01/document.pdf"));
+
+    Ok(())
+}
+
 /// Test cross-column modifier functionality
 #[test]
 fn test_cross_column_modifier_integration() -> Result<(), Box<dyn std::error::Error>> {
@@ -315,7 +346,7 @@ fn test_multiple_modifiers_integration() -> Result<(), Box<dyn std::error::Error
     assert_eq!(stats.total_rows, 2);
     assert_eq!(stats.cells_modified, 6); // 2 rows × 3 columns
     assert_eq!(stats.validation_failures, 0);
-    assert_eq!(stats.columns_processed.len(), 3);
+    assert_eq!(stats.columns_processed.len(), 4);
 
     let output_content = std::fs::read_to_string(&output_path)?;
 
