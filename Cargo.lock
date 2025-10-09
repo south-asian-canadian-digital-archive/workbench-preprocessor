@@ -879,21 +879,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "organise"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "csv",
- "env_logger",
- "log",
- "reqwest",
- "serde",
- "tempfile",
- "url",
-]
-
-[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1774,6 +1759,21 @@ name = "wit-bindgen"
 version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "052283831dbae3d879dc7f51f3d92703a316ca49f91540417d38591826127814"
+
+[[package]]
+name = "workbench-preprocessor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "csv",
+ "env_logger",
+ "log",
+ "reqwest",
+ "serde",
+ "tempfile",
+ "url",
+]
 
 [[package]]
 name = "writeable"

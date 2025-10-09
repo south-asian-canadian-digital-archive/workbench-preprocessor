@@ -166,7 +166,8 @@ fn test_csv_processing_with_validation_failures() -> Result<(), Box<dyn std::err
     // Row 3: Has accessIdentifier but no file -> parent_id can apply, file cannot -> 1 modification
     // Row 4: Has file & file_extension but no accessIdentifier -> neither can apply -> 0 modifications
 
-    assert_eq!(stats.total_rows, 4);
+    assert_eq!(stats.total_rows, 2);
+    assert_eq!(stats.skipped_rows, 2);
     assert!(stats.validation_failures > 0);
     assert_eq!(stats.cells_modified, 3); // Row 1: 2 modifications, Row 3: 1 modification
 
@@ -174,6 +175,7 @@ fn test_csv_processing_with_validation_failures() -> Result<(), Box<dyn std::err
     let output_content = std::fs::read_to_string(&output_path)?;
     assert!(output_content.contains("2024_19_01/document.pdf"));
     assert!(output_content.contains("2024_19_01,Valid Document"));
+    assert!(!output_content.contains("Missing Access ID"));
 
     Ok(())
 }
@@ -247,6 +249,36 @@ fn test_rows_with_zero_suffix_access_identifier_are_skipped(
     assert!(!output_content.contains("Container Record"));
     assert!(output_content.contains("Child Record"));
     assert!(output_content.contains("2024_19_01/document.pdf"));
+
+    Ok(())
+}
+
+/// Ensure duplicate access identifiers are rejected after the first occurrence
+#[test]
+fn test_duplicate_access_identifiers_are_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    let csv_content = r#"accessIdentifier,file,file_extension,parent_id,title
+2024_19_01_001,document,pdf,,Original Row
+2024_19_01_001,image,jpg,,Duplicate Row
+2024_19_01_002,report,pdf,,Second Unique"#;
+
+    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
+    let output_path = format!("{}_output.csv", input_path);
+
+    let modifier = CsvModifier::new()
+        .add_column_modifier("parent_id", ParentIdModifier)
+        .add_column_modifier("file", FileExtensionModifier);
+
+    let stats = modifier.process_file(&input_path, &output_path)?;
+
+    assert_eq!(stats.total_rows, 2);
+    assert_eq!(stats.skipped_rows, 1);
+    assert_eq!(stats.validation_failures, 1);
+    assert_eq!(stats.cells_modified, 4);
+
+    let output_content = std::fs::read_to_string(&output_path)?;
+    assert!(output_content.contains("2024_19_01/document.pdf"));
+    assert!(output_content.contains("2024_19_01/report.pdf"));
+    assert!(!output_content.contains("Duplicate Row"));
 
     Ok(())
 }

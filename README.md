@@ -20,6 +20,7 @@ This project ships a single CLI binary, **`organise`**, which can:
 - **Google Sheets Integration**: Process CSV data directly from Google Sheets URLs
 - **Comprehensive Statistics**: Detailed processing statistics and validation reporting
 - **Container Row Filtering**: Automatically skips `accessIdentifier` values ending with `_00` or `_000`
+- **Identifier Hygiene**: Removes rows missing an `accessIdentifier` and suppresses duplicate identifiers before they reach the output
 - **Flexible Output Control**: Override filenames or route artefacts into a dedicated output directory
 - **Command Line Interface**: Easy-to-use CLI for batch processing
 - **Error Handling**: Robust error handling with context information
@@ -270,7 +271,7 @@ Creates file paths using parent ID directories and file extensions from other co
 - Handles existing file extensions by replacing them
 
 ### AccessIdentifierValidator (built-in)
-Validates the `accessIdentifier` column before other modifiers run. Empty values are permitted, but identifiers ending with `_00` or `_000` indicate container or collection records and cause the entire row to be skipped. Skipped rows appear in the processing summary so you can audit how many container records were removed.
+Validates the `accessIdentifier` column before other modifiers run. Rows with empty values or duplicate identifiers are rejected, and identifiers ending with `_00` or `_000` indicate container or collection records and cause the entire row to be skipped. Skipped rows appear in the processing summary so you can audit how many unusable records were removed.
 
 ## Library Usage
 

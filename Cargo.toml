@@ -1,7 +1,11 @@
 [package]
-name = "organise"
+name = "workbench-preprocessor"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+name = "organise"
+path = "src/lib.rs"
 
 [[bin]]
 name = "organise"

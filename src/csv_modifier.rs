@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use csv::{Reader, Writer};
 use log::warn;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 
 fn normalize_cell(value: &str) -> &str {
@@ -122,10 +122,12 @@ impl CsvModifier {
 
         // Stream processing for column modifiers
         let mut validation_logging_suppressed = false;
+        let mut seen_access_identifiers: HashSet<String> = HashSet::new();
         for (row_idx, result) in reader.records().enumerate() {
             let record = result?;
             let mut row_values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
             let mut row_valid = true;
+            let mut current_access_identifier: Option<String> = None;
 
             for (column_name, modifier) in &self.column_modifiers {
                 if let Some(&col_index) = header_map.get(column_name) {
@@ -133,8 +135,44 @@ impl CsvModifier {
                         let row_context = RowContext::new(&headers, &row_values, row_idx);
 
                         if modifier.validate(cell, &row_context) {
+                            let mut duplicate_detected = false;
+
+                            if column_name.as_str() == "accessIdentifier" {
+                                let normalized_value = normalize_cell(cell.as_str());
+                                if !normalized_value.is_empty() {
+                                    if seen_access_identifiers.contains(normalized_value) {
+                                        stats.validation_failures += 1;
+
+                                        if stats.validation_failures <= 25 {
+                                            warn!(
+                                                "Duplicate accessIdentifier '{}' detected at row {}. Skipping row.",
+                                                normalized_value,
+                                                row_idx + 1
+                                            );
+                                        } else if !validation_logging_suppressed {
+                                            warn!(
+                                                "More than 25 validation failures encountered. Suppressing additional validation logs to avoid noise."
+                                            );
+                                            validation_logging_suppressed = true;
+                                        }
+
+                                        duplicate_detected = true;
+                                    } else {
+                                        current_access_identifier =
+                                            Some(normalized_value.to_string());
+                                    }
+                                }
+                            }
+
+                            if duplicate_detected {
+                                drop(row_context);
+                                row_valid = false;
+                                break;
+                            }
+
                             let original = cell.clone();
                             let new_value = modifier.modify(cell, &row_context);
+                            drop(row_context);
 
                             if let Some(cell_mut) = row_values.get_mut(col_index) {
                                 if original != new_value {
@@ -144,7 +182,7 @@ impl CsvModifier {
                             }
                         } else {
                             stats.validation_failures += 1;
-                            let row_number = row_context.row_index() + 1;
+                            let row_number = row_idx + 1;
                             let original_cell_value = cell.clone();
                             let sanitized_cell = normalize_cell(&original_cell_value).to_string();
                             let access_identifier_raw = row_context
@@ -171,6 +209,8 @@ impl CsvModifier {
                                 } else {
                                     file_extension_alt_clean.as_str()
                                 };
+
+                            drop(row_context);
 
                             if sanitized_cell.is_empty()
                                 && !original_cell_value.trim().is_empty()
@@ -262,6 +302,10 @@ impl CsvModifier {
                 continue;
             }
 
+            if let Some(identifier) = current_access_identifier {
+                seen_access_identifiers.insert(identifier);
+            }
+
             writer.write_record(&row_values)?;
             stats.total_rows += 1;
         }
@@ -311,7 +355,7 @@ impl ColumnModifier for AccessIdentifierValidator {
         let clean = normalize_cell(value);
 
         if clean.is_empty() {
-            return true;
+            return false;
         }
 
         !(clean.ends_with("_00") || clean.ends_with("_000"))
