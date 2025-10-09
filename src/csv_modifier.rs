@@ -112,6 +112,13 @@ impl CsvModifier {
             .map(|(i, h)| (h.clone(), i))
             .collect();
 
+        let title_column = ["title", "fileTitle"].iter().find_map(|name| {
+            header_map
+                .get(*name)
+                .copied()
+                .map(|index| (index, *name))
+        });
+
         let output_file = File::create(output_path).context("Failed to create output file")?;
         let mut writer = Writer::from_writer(output_file);
 
@@ -128,6 +135,43 @@ impl CsvModifier {
             let mut row_values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
             let mut row_valid = true;
             let mut current_access_identifier: Option<String> = None;
+
+            if let Some((title_idx, title_name)) = title_column {
+                let title_value = row_values
+                    .get(title_idx)
+                    .map(|value| normalize_cell(value.as_str()))
+                    .unwrap_or("");
+
+                if title_value.is_empty() {
+                    stats.validation_failures += 1;
+
+                    if let Some(first_cell) = row_values.get_mut(0) {
+                        if first_cell.starts_with('#') {
+                            // already marked
+                        } else if first_cell.is_empty() {
+                            first_cell.push('#');
+                        } else {
+                            first_cell.insert(0, '#');
+                        }
+                    }
+
+                    if stats.validation_failures <= 25 {
+                        warn!(
+                            "Validation failed for column '{}' at row {}. Reason: empty value detected; row marked and skipped.",
+                            title_name,
+                            row_idx + 1
+                        );
+                    } else if !validation_logging_suppressed {
+                        warn!(
+                            "More than 25 validation failures encountered. Suppressing additional validation logs to avoid noise."
+                        );
+                        validation_logging_suppressed = true;
+                    }
+
+                    stats.skipped_rows += 1;
+                    continue;
+                }
+            }
 
             for (column_name, modifier) in &self.column_modifiers {
                 if let Some(&col_index) = header_map.get(column_name) {

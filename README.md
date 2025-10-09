@@ -21,6 +21,7 @@ This project ships a single CLI binary, **`organise`**, which can:
 - **Comprehensive Statistics**: Detailed processing statistics and validation reporting
 - **Container Row Filtering**: Automatically skips `accessIdentifier` values ending with `_00` or `_000`
 - **Identifier Hygiene**: Removes rows missing an `accessIdentifier` and suppresses duplicate identifiers before they reach the output
+- **Title Safeguards**: Skips rows whose `title`/`fileTitle` values are empty after normalisation and flags them in the source column for auditing
 - **Flexible Output Control**: Override filenames or route artefacts into a dedicated output directory
 - **Command Line Interface**: Easy-to-use CLI for batch processing
 - **Error Handling**: Robust error handling with context information

@@ -212,7 +212,8 @@ foo bar,another description,category2
 
     let stats = modifier.process_file(&input_path, &output_path)?;
 
-    assert_eq!(stats.total_rows, 3);
+    assert_eq!(stats.total_rows, 2);
+    assert_eq!(stats.skipped_rows, 1);
     assert_eq!(stats.cells_modified, 2); // Two valid titles
     assert_eq!(stats.validation_failures, 1); // One empty title
 
@@ -279,6 +280,34 @@ fn test_duplicate_access_identifiers_are_skipped() -> Result<(), Box<dyn std::er
     assert!(output_content.contains("2024_19_01/document.pdf"));
     assert!(output_content.contains("2024_19_01/report.pdf"));
     assert!(!output_content.contains("Duplicate Row"));
+
+    Ok(())
+}
+
+/// Ensure rows with empty titles are skipped before modifiers run
+#[test]
+fn test_rows_with_empty_title_are_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    let csv_content = r#"accessIdentifier,file,file_extension,parent_id,title
+2024_19_01_001,document,pdf,,
+2024_19_01_002,image,jpg,,Valid Title"#;
+
+    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
+    let output_path = format!("{}_output.csv", input_path);
+
+    let modifier = CsvModifier::new()
+        .add_column_modifier("parent_id", ParentIdModifier)
+        .add_column_modifier("file", FileExtensionModifier);
+
+    let stats = modifier.process_file(&input_path, &output_path)?;
+
+    assert_eq!(stats.total_rows, 1);
+    assert_eq!(stats.skipped_rows, 1);
+    assert!(stats.validation_failures > 0);
+
+    let output_content = std::fs::read_to_string(&output_path)?;
+    assert!(output_content.contains("2024_19_01_002"));
+    assert!(output_content.contains("2024_19_01/image.jpg"));
+    assert!(!output_content.contains(",,"));
 
     Ok(())
 }
