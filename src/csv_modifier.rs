@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use csv::{Reader, Writer};
+use encoding_rs::WINDOWS_1252;
 use log::warn;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -15,6 +16,64 @@ fn normalize_cell(value: &str) -> &str {
 
 fn is_effectively_empty(value: &str) -> bool {
     normalize_cell(value).is_empty()
+}
+
+fn contains_mojibake_markers(value: &str) -> bool {
+    value
+        .chars()
+        .any(|c| matches!(c, 'Ã' | 'â' | '€' | '™' | 'œ' | '¢' | '‰' | 'Š' | 'ž' | 'Â'))
+}
+
+fn fix_common_mojibake(value: &str) -> Option<String> {
+    if !contains_mojibake_markers(value) {
+        return None;
+    }
+
+    let (encoded, _, had_errors) = WINDOWS_1252.encode(value);
+    if had_errors {
+        return None;
+    }
+
+    let candidate = encoded.into_owned();
+    match String::from_utf8(candidate) {
+        Ok(decoded) if decoded != value => Some(decoded),
+        _ => None,
+    }
+}
+
+fn sanitize_text_in_place(value: &mut String) -> bool {
+    let mut changed = false;
+
+    if value.contains('\u{00A0}') {
+        *value = value.replace('\u{00A0}', " ");
+        changed = true;
+    }
+
+    if let Some(decoded) = fix_common_mojibake(value) {
+        if decoded != *value {
+            *value = decoded;
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+fn ensure_wrapped_in_quotes(value: &mut String) -> bool {
+    if value.is_empty() {
+        *value = "\"\"".to_string();
+        return true;
+    }
+
+    if value.starts_with('"') && value.ends_with('"') {
+        return false;
+    }
+
+    let mut escaped = value.replace('"', "\"\"");
+    escaped.insert(0, '"');
+    escaped.push('"');
+    *value = escaped;
+    true
 }
 
 pub trait ColumnModifier {
@@ -112,12 +171,10 @@ impl CsvModifier {
             .map(|(i, h)| (h.clone(), i))
             .collect();
 
-        let title_column = ["title", "fileTitle"].iter().find_map(|name| {
-            header_map
-                .get(*name)
-                .copied()
-                .map(|index| (index, *name))
-        });
+        let title_column = ["title", "fileTitle"]
+            .iter()
+            .find_map(|name| header_map.get(*name).copied().map(|index| (index, *name)));
+        let field_description_column = header_map.get("field_description").copied();
 
         let output_file = File::create(output_path).context("Failed to create output file")?;
         let mut writer = Writer::from_writer(output_file);
@@ -135,6 +192,16 @@ impl CsvModifier {
             let mut row_values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
             let mut row_valid = true;
             let mut current_access_identifier: Option<String> = None;
+            let mut sanitized_cells = 0;
+
+            for cell in row_values.iter_mut() {
+                if sanitize_text_in_place(cell) {
+                    sanitized_cells += 1;
+                }
+            }
+            if sanitized_cells > 0 {
+                stats.cells_modified += sanitized_cells;
+            }
 
             if let Some((title_idx, title_name)) = title_column {
                 let title_value = row_values
@@ -348,6 +415,14 @@ impl CsvModifier {
 
             if let Some(identifier) = current_access_identifier {
                 seen_access_identifiers.insert(identifier);
+            }
+
+            if let Some(field_idx) = field_description_column {
+                if let Some(cell) = row_values.get_mut(field_idx) {
+                    if ensure_wrapped_in_quotes(cell) {
+                        stats.cells_modified += 1;
+                    }
+                }
             }
 
             writer.write_record(&row_values)?;

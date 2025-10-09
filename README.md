@@ -22,6 +22,7 @@ This project ships a single CLI binary, **`organise`**, which can:
 - **Container Row Filtering**: Automatically skips `accessIdentifier` values ending with `_00` or `_000`
 - **Identifier Hygiene**: Removes rows missing an `accessIdentifier` and suppresses duplicate identifiers before they reach the output
 - **Title Safeguards**: Skips rows whose `title`/`fileTitle` values are empty after normalisation and flags them in the source column for auditing
+- **Text Sanitisation**: Repairs common mojibake (e.g. `MontrÃ©al` → `Montréal`, `Peopleâ€™s` → `People’s`), replaces stray non-breaking spaces, and guarantees `field_description` values are wrapped in quotes for downstream tooling
 - **Flexible Output Control**: Override filenames or route artefacts into a dedicated output directory
 - **Command Line Interface**: Easy-to-use CLI for batch processing
 - **Error Handling**: Robust error handling with context information

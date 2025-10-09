@@ -28,7 +28,7 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
 2024_19_01_002,image,jpg,,Second Image
 2024_20_02_001,report,docx,,Third Report"#;
 
-    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
+    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
     let output_path = format!("{}_output.csv", input_path);
 
     let modifier = CsvModifier::new()
@@ -78,7 +78,7 @@ fn test_csv_processing_with_file_extention_alias() -> Result<(), Box<dyn std::er
 2024_19_01_001,document,pdf,,First Document
 2024_19_01_002,image,jpg,,Second Image"#;
 
-    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
+    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
     let output_path = format!("{}_output.csv", input_path);
 
     let modifier = CsvModifier::new()
@@ -115,7 +115,7 @@ fn test_csv_processing_ignores_value_placeholders() -> Result<(), Box<dyn std::e
 #VALUE!,#VALUE!,pdf,#VALUE!,Broken Row
 2024_19_01_001,document,pdf,,Valid Row"#;
 
-    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
+    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
     let output_path = format!("{}_output.csv", input_path);
 
     let modifier = CsvModifier::new()
@@ -308,6 +308,44 @@ fn test_rows_with_empty_title_are_skipped() -> Result<(), Box<dyn std::error::Er
     assert!(output_content.contains("2024_19_01_002"));
     assert!(output_content.contains("2024_19_01/image.jpg"));
     assert!(!output_content.contains(",,"));
+
+    Ok(())
+}
+
+/// Ensure textual data is sanitized and field_description is quoted
+#[test]
+fn test_text_sanitization_and_description_quotes() -> Result<(), Box<dyn std::error::Error>> {
+    let nbsp = '\u{00A0}';
+    let csv_content = format!(
+        "accessIdentifier,file,file_extension,parent_id,title,field_description\n{}
+{}
+{}
+",
+        "2024_19_01_001,asset,pdf,,Peopleâ€™s Archive,Peopleâ€™s collection overview",
+        "2024_19_01_002,asset,pdf,,MontrÃ©al Stories,\"Already quoted\"",
+        format!("2024_19_01_003,asset,pdf,,Valid Title,{}Leading NBSP", nbsp)
+    );
+
+    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
+    let output_path = format!("{}_output.csv", input_path);
+
+    let modifier = CsvModifier::new()
+        .add_column_modifier("parent_id", ParentIdModifier)
+        .add_column_modifier("file", FileExtensionModifier);
+
+    let stats = modifier.process_file(&input_path, &output_path)?;
+
+    assert_eq!(stats.total_rows, 3);
+    assert_eq!(stats.skipped_rows, 0);
+
+    let output_content = std::fs::read_to_string(&output_path)?;
+    println!("{:?}", output_content);
+
+    assert!(output_content.contains("People’s Archive"));
+    assert!(output_content.contains("Montréal Stories"));
+    assert!(output_content.contains("\"\"People’s collection overview\"\""));
+    assert!(output_content.contains("\"\"Already quoted\"\""));
+    assert!(output_content.contains("\"\" Leading NBSP\"\""));
 
     Ok(())
 }

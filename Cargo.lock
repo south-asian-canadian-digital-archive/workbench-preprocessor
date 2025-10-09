@@ -1767,6 +1767,7 @@ dependencies = [
  "anyhow",
  "clap",
  "csv",
+ "encoding_rs",
  "env_logger",
  "log",
  "reqwest",
