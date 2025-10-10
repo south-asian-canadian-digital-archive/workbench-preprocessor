@@ -81,23 +81,6 @@ fn replace_semicolon_subdelimiter(value: &mut String) -> bool {
     }
 }
 
-fn ensure_wrapped_in_quotes(value: &mut String) -> bool {
-    if value.is_empty() {
-        *value = "\"\"".to_string();
-        return true;
-    }
-
-    if value.starts_with('"') && value.ends_with('"') {
-        return false;
-    }
-
-    let mut escaped = value.replace('"', "\"\"");
-    escaped.insert(0, '"');
-    escaped.push('"');
-    *value = escaped;
-    true
-}
-
 pub trait ColumnModifier {
     fn modify(&self, value: &str, row: &RowContext) -> String;
     fn description(&self) -> &str;
@@ -200,7 +183,6 @@ impl CsvModifier {
         let title_column = ["title", "fileTitle"]
             .iter()
             .find_map(|name| header_map.get(*name).copied().map(|index| (index, *name)));
-        let field_description_column = header_map.get("field_description").copied();
 
         let output_file = File::create(output_path).context("Failed to create output file")?;
         let mut writer = Writer::from_writer(output_file);
@@ -454,14 +436,6 @@ impl CsvModifier {
 
             if let Some(identifier) = current_access_identifier {
                 seen_access_identifiers.insert(identifier);
-            }
-
-            if let Some(field_idx) = field_description_column {
-                if let Some(cell) = row_values.get_mut(field_idx) {
-                    if ensure_wrapped_in_quotes(cell) {
-                        stats.cells_modified += 1;
-                    }
-                }
             }
 
             writer.write_record(&row_values)?;
