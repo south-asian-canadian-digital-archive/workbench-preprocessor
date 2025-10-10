@@ -136,6 +136,10 @@ impl CsvModifier {
             "accessIdentifier".to_string(),
             Box::new(AccessIdentifierValidator),
         );
+        column_modifiers.insert(
+            "field_description".to_string(),
+            Box::new(FieldDescriptionSemicolonEscaper),
+        );
 
         Self { column_modifiers }
     }
@@ -478,6 +482,43 @@ impl ColumnModifier for AccessIdentifierValidator {
         }
 
         !(clean.ends_with("_00") || clean.ends_with("_000"))
+    }
+}
+
+pub struct FieldDescriptionSemicolonEscaper;
+
+impl ColumnModifier for FieldDescriptionSemicolonEscaper {
+    fn modify(&self, value: &str, _row: &RowContext) -> String {
+        if value.is_empty() {
+            return String::new();
+        }
+
+        let mut result = String::with_capacity(value.len());
+        let mut changed = false;
+        let mut previous = None;
+
+        for ch in value.chars() {
+            if ch == ';' {
+                if previous != Some('\\') {
+                    result.push('\\');
+                    changed = true;
+                }
+                result.push(';');
+            } else {
+                result.push(ch);
+            }
+            previous = Some(ch);
+        }
+
+        if changed {
+            result
+        } else {
+            value.to_string()
+        }
+    }
+
+    fn description(&self) -> &str {
+        "Escapes unescaped semicolons in field_description"
     }
 }
 
