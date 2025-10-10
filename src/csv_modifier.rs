@@ -21,10 +21,7 @@ fn is_effectively_empty(value: &str) -> bool {
 fn contains_mojibake_markers(value: &str) -> bool {
     value
         .chars()
-        .any(|c| matches!(c, 
-            'Ã' | 'â' | '€' | '™' | 'œ' | 'Â' | 'Î' | 
-            '¢' | '‰' | 'Š' | 'ž' | '¡' | '«' | '»' | 'š'
-        ))
+        .any(|c| matches!(c, 'Ã' | 'â' | '€' | '™' | 'œ' | 'Â' | 'Î' | '¢' | '‰' | 'Š' | 'ž' | '¡' | '«' | '»' | 'š' | '‚' | '„' | '¬'))
 }
 
 fn fix_common_mojibake(value: &str) -> Option<String> {
@@ -32,18 +29,29 @@ fn fix_common_mojibake(value: &str) -> Option<String> {
         return None;
     }
 
-    // The mojibake happened because UTF-8 bytes were interpreted as Windows-1252
-    // To fix: convert the string to bytes, then decode those bytes as Windows-1252
+    // The text has been incorrectly interpreted as UTF-8 when it was actually Windows-1252
+    // So we need to:
+    // 1. Get the raw bytes of the string (treating the UTF-8 chars as if they were bytes)
+    // 2. Re-interpret those bytes as Windows-1252
+    
+    // Convert the string to bytes (this gives us the UTF-8 encoding)
     let bytes = value.as_bytes();
     
-    // Decode the UTF-8 bytes as if they were Windows-1252
+    // Try to decode those bytes as Windows-1252
     let (decoded, _, had_errors) = WINDOWS_1252.decode(bytes);
     
-    if had_errors || decoded == value {
+    if had_errors {
         return None;
     }
-
-    Some(decoded.to_string())
+    
+    let decoded_string = decoded.to_string();
+    
+    // Only return if we actually changed something
+    if decoded_string != value && !contains_mojibake_markers(&decoded_string) {
+        Some(decoded_string)
+    } else {
+        None
+    }
 }
 
 fn sanitize_text_in_place(value: &mut String) -> bool {
@@ -62,6 +70,15 @@ fn sanitize_text_in_place(value: &mut String) -> bool {
     }
 
     changed
+}
+
+fn replace_semicolon_subdelimiter(value: &mut String) -> bool {
+    if value.contains(';') {
+        *value = value.replace(';', "|");
+        true
+    } else {
+        false
+    }
 }
 
 fn ensure_wrapped_in_quotes(value: &mut String) -> bool {
@@ -420,6 +437,19 @@ impl CsvModifier {
             if !row_valid {
                 stats.skipped_rows += 1;
                 continue;
+            }
+
+            for (idx, cell) in row_values.iter_mut().enumerate() {
+                let header_name = headers.get(idx).map(|s| s.as_str()).unwrap_or("");
+                if header_name.eq_ignore_ascii_case("field_description")
+                    || header_name.eq_ignore_ascii_case("description")
+                {
+                    continue;
+                }
+
+                if replace_semicolon_subdelimiter(cell) {
+                    stats.cells_modified += 1;
+                }
             }
 
             if let Some(identifier) = current_access_identifier {
