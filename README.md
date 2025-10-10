@@ -29,6 +29,17 @@ This project ships a single CLI binary, **`organise`**, which can:
 
 ## Installation
 
+### Pre-built Binaries (Recommended)
+
+Download the latest pre-built binaries from the [Releases](https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor/releases) page:
+
+- **Linux**: `workbench-preprocessor-linux-x86_64.tar.gz`
+- **Windows**: `workbench-preprocessor-windows-x86_64.zip`
+
+Extract the archive and you'll find the `organise` binary (or `organise.exe` on Windows).
+
+### Building from Source
+
 Build the project:
 
 ```bash
@@ -487,3 +498,49 @@ To use Google Sheets integration:
 ## License
 
 This project is licensed under the MIT License.
+
+## Releases
+
+### Creating a New Release
+
+This project uses GitHub Actions to automatically build binaries for Linux and Windows when you create a new version tag.
+
+To create a new release:
+
+1. **Update version** (optional, but recommended):
+   ```bash
+   # Update version in Cargo.toml
+   vim Cargo.toml
+   ```
+
+2. **Commit your changes**:
+   ```bash
+   git add .
+   git commit -m "Prepare release v1.0.0"
+   git push origin main
+   ```
+
+3. **Create and push a version tag**:
+   ```bash
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+
+4. **GitHub Actions will automatically**:
+   - Build binaries for Linux (x86_64) and Windows (x86_64)
+   - Create a GitHub Release with both binaries attached
+   - Generate release notes from recent commits
+
+### Manual Release Trigger
+
+You can also manually trigger a release build from the GitHub Actions tab without creating a tag. This is useful for testing the build process.
+
+### Continuous Integration
+
+Every push to `main` or `develop` branches, and every pull request, will automatically:
+- Run code formatting checks (`cargo fmt`)
+- Run linting checks (`cargo clippy`)
+- Run all tests
+- Build the project
+
+This ensures code quality and prevents broken builds from being merged.
