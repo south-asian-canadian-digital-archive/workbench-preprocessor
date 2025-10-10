@@ -21,7 +21,10 @@ fn is_effectively_empty(value: &str) -> bool {
 fn contains_mojibake_markers(value: &str) -> bool {
     value
         .chars()
-        .any(|c| matches!(c, 'Ã' | 'â' | '€' | '™' | 'œ' | '¢' | '‰' | 'Š' | 'ž' | 'Â'))
+        .any(|c| matches!(c, 
+            'Ã' | 'â' | '€' | '™' | 'œ' | 'Â' | 'Î' | 
+            '¢' | '‰' | 'Š' | 'ž' | '¡' | '«' | '»' | 'š'
+        ))
 }
 
 fn fix_common_mojibake(value: &str) -> Option<String> {
@@ -29,16 +32,18 @@ fn fix_common_mojibake(value: &str) -> Option<String> {
         return None;
     }
 
-    let (encoded, _, had_errors) = WINDOWS_1252.encode(value);
-    if had_errors {
+    // The mojibake happened because UTF-8 bytes were interpreted as Windows-1252
+    // To fix: convert the string to bytes, then decode those bytes as Windows-1252
+    let bytes = value.as_bytes();
+    
+    // Decode the UTF-8 bytes as if they were Windows-1252
+    let (decoded, _, had_errors) = WINDOWS_1252.decode(bytes);
+    
+    if had_errors || decoded == value {
         return None;
     }
 
-    let candidate = encoded.into_owned();
-    match String::from_utf8(candidate) {
-        Ok(decoded) if decoded != value => Some(decoded),
-        _ => None,
-    }
+    Some(decoded.to_string())
 }
 
 fn sanitize_text_in_place(value: &mut String) -> bool {
