@@ -29,28 +29,19 @@ fn fix_common_mojibake(value: &str) -> Option<String> {
         return None;
     }
 
-    // The text has been incorrectly interpreted as UTF-8 when it was actually Windows-1252
-    // So we need to:
-    // 1. Get the raw bytes of the string (treating the UTF-8 chars as if they were bytes)
-    // 2. Re-interpret those bytes as Windows-1252
-    
-    // Convert the string to bytes (this gives us the UTF-8 encoding)
-    let bytes = value.as_bytes();
-    
-    // Try to decode those bytes as Windows-1252
-    let (decoded, _, had_errors) = WINDOWS_1252.decode(bytes);
-    
-    if had_errors {
+    let (encoded, _, encode_had_errors) = WINDOWS_1252.encode(value);
+
+    if encode_had_errors {
         return None;
     }
-    
-    let decoded_string = decoded.to_string();
-    
-    // Only return if we actually changed something
-    if decoded_string != value && !contains_mojibake_markers(&decoded_string) {
-        Some(decoded_string)
-    } else {
-        None
+
+    match String::from_utf8(encoded.into_owned()) {
+        Ok(decoded_string)
+            if decoded_string != value && !contains_mojibake_markers(&decoded_string) =>
+        {
+            Some(decoded_string)
+        }
+        _ => None,
     }
 }
 
@@ -78,6 +69,22 @@ fn replace_semicolon_subdelimiter(value: &mut String) -> bool {
         true
     } else {
         false
+    }
+}
+
+fn ensure_wrapped_in_quotes(value: &str) -> String {
+    if value.is_empty() {
+        return "\"\"".to_string();
+    }
+
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        value.to_string()
+    } else {
+        let mut wrapped = String::with_capacity(value.len() + 2);
+        wrapped.push('"');
+        wrapped.push_str(value);
+        wrapped.push('"');
+        wrapped
     }
 }
 
@@ -132,6 +139,12 @@ impl<'a> RowContext<'a> {
 
 pub struct CsvModifier {
     column_modifiers: BTreeMap<String, Box<dyn ColumnModifier>>,
+}
+
+impl Default for CsvModifier {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CsvModifier {
@@ -250,7 +263,15 @@ impl CsvModifier {
 
             for (column_name, modifier) in &self.column_modifiers {
                 if let Some(&col_index) = header_map.get(column_name) {
-                    if let Some(cell) = row_values.get(col_index) {
+                    let mut post_update: Option<(usize, String)> = None;
+                    let mut clear_cell = false;
+                    let mut invalidate_row = false;
+
+                    {
+                        let Some(cell) = row_values.get(col_index) else {
+                            continue;
+                        };
+
                         let row_context = RowContext::new(&headers, &row_values, row_idx);
 
                         if modifier.validate(cell, &row_context) {
@@ -284,20 +305,15 @@ impl CsvModifier {
                             }
 
                             if duplicate_detected {
-                                drop(row_context);
-                                row_valid = false;
-                                break;
-                            }
+                                invalidate_row = true;
+                            } else {
+                                let original = cell.clone();
+                                let new_value = modifier.modify(cell, &row_context);
 
-                            let original = cell.clone();
-                            let new_value = modifier.modify(cell, &row_context);
-                            drop(row_context);
-
-                            if let Some(cell_mut) = row_values.get_mut(col_index) {
                                 if original != new_value {
                                     stats.cells_modified += 1;
+                                    post_update = Some((col_index, new_value));
                                 }
-                                *cell_mut = new_value;
                             }
                         } else {
                             stats.validation_failures += 1;
@@ -329,30 +345,18 @@ impl CsvModifier {
                                     file_extension_alt_clean.as_str()
                                 };
 
-                            drop(row_context);
-
                             if sanitized_cell.is_empty()
                                 && !original_cell_value.trim().is_empty()
                                 && column_name.as_str() == "parent_id"
                             {
-                                if let Some(cell_mut) = row_values.get_mut(col_index) {
-                                    if !cell_mut.is_empty() {
-                                        cell_mut.clear();
-                                        stats.cells_modified += 1;
-                                    }
-                                }
+                                clear_cell = true;
                             }
 
                             if sanitized_cell.is_empty()
                                 && !original_cell_value.trim().is_empty()
                                 && column_name.as_str() == "file"
                             {
-                                if let Some(cell_mut) = row_values.get_mut(col_index) {
-                                    if !cell_mut.is_empty() {
-                                        cell_mut.clear();
-                                        stats.cells_modified += 1;
-                                    }
-                                }
+                                clear_cell = true;
                             }
 
                             if stats.validation_failures <= 25 {
@@ -405,8 +409,25 @@ impl CsvModifier {
                             }
 
                             if column_name == "accessIdentifier" {
-                                row_valid = false;
-                                break;
+                                invalidate_row = true;
+                            }
+                        }
+                    }
+
+                    if invalidate_row {
+                        row_valid = false;
+                        break;
+                    }
+
+                    if let Some((target_col, new_value)) = post_update.take() {
+                        if let Some(cell_mut) = row_values.get_mut(target_col) {
+                            *cell_mut = new_value;
+                        }
+                    } else if clear_cell {
+                        if let Some(cell_mut) = row_values.get_mut(col_index) {
+                            if !cell_mut.is_empty() {
+                                cell_mut.clear();
+                                stats.cells_modified += 1;
                             }
                         }
                     }
@@ -451,7 +472,7 @@ impl CsvModifier {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ProcessingStats {
     pub total_rows: usize,
     pub cells_modified: usize,
@@ -462,13 +483,7 @@ pub struct ProcessingStats {
 
 impl ProcessingStats {
     pub fn new() -> Self {
-        Self {
-            total_rows: 0,
-            cells_modified: 0,
-            validation_failures: 0,
-            skipped_rows: 0, // Initialize skipped_rows
-            columns_processed: std::collections::HashSet::new(),
-        }
+        Self::default()
     }
 }
 
@@ -499,7 +514,7 @@ pub struct FieldDescriptionSemicolonEscaper;
 impl ColumnModifier for FieldDescriptionSemicolonEscaper {
     fn modify(&self, value: &str, _row: &RowContext) -> String {
         if value.is_empty() {
-            return String::new();
+            return ensure_wrapped_in_quotes(value);
         }
 
         let mut result = String::with_capacity(value.len());
@@ -519,11 +534,13 @@ impl ColumnModifier for FieldDescriptionSemicolonEscaper {
             previous = Some(ch);
         }
 
-        if changed {
+        let escaped = if changed {
             result
         } else {
             value.to_string()
-        }
+        };
+
+        ensure_wrapped_in_quotes(&escaped)
     }
 
     fn description(&self) -> &str {

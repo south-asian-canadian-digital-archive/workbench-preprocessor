@@ -81,7 +81,7 @@ impl ItemCsvGenerator {
         let output_file = File::create(output_path).context("Failed to create output file")?;
         let mut writer = Writer::from_writer(output_file);
 
-        writer.write_record(&["file_identifier", "title", "# of items", "field_member_of"])?;
+    writer.write_record(["file_identifier", "title", "# of items", "field_member_of"])?;
 
         let mut sorted_data: Vec<_> = parent_data.into_iter().collect();
         sorted_data.sort_by(|a, b| a.0.cmp(&b.0));
@@ -89,7 +89,13 @@ impl ItemCsvGenerator {
         let node_value = node.unwrap_or("");
 
         for (file_identifier, (title, count)) in sorted_data {
-            writer.write_record(&[&file_identifier, &title, &count.to_string(), node_value])?;
+            let count_str = count.to_string();
+            writer.write_record([
+                file_identifier.as_str(),
+                title.as_str(),
+                count_str.as_str(),
+                node_value,
+            ])?;
         }
 
         writer.flush()?;

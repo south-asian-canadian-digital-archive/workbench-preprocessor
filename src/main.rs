@@ -134,7 +134,7 @@ fn init_logging() {
         .try_init();
 }
 fn determine_modifiers_to_run(only_run: &[Modifier], ignore_run: &[Modifier]) -> HashSet<Modifier> {
-    let all_modifiers = vec![Modifier::ParentId, Modifier::FileExtension];
+    let all_modifiers = [Modifier::ParentId, Modifier::FileExtension];
 
     let mut active_modifiers: HashSet<Modifier> = if only_run.is_empty() {
         // Default behavior: run all modifiers
@@ -172,7 +172,7 @@ fn create_modifier(only_run: &[Modifier], ignore_run: &[Modifier]) -> CsvModifie
     }
 
     // Show which modifiers were ignored/excluded
-    let all_modifiers = vec![Modifier::ParentId, Modifier::FileExtension];
+    let all_modifiers = [Modifier::ParentId, Modifier::FileExtension];
     let excluded_modifiers: Vec<&Modifier> = all_modifiers
         .iter()
         .filter(|m| !active_modifiers.contains(m))
