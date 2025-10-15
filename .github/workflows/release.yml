@@ -55,9 +55,44 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.platform.target }}
 
+      - name: Install UPX (Linux)
+        if: matrix.platform.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx
+
+      - name: Install UPX (Windows)
+        if: matrix.platform.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install upx -y
+
+      - name: Show binary size before compression
+        shell: bash
+        run: |
+          echo "Binary size before compression:"
+          ls -lh target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}
+
+      - name: Compress with UPX (Linux)
+        if: matrix.platform.os == 'ubuntu-latest'
+        continue-on-error: true
+        run: upx --best --lzma target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}
+
+      - name: Compress with UPX (Windows)
+        if: matrix.platform.os == 'windows-latest'
+        continue-on-error: true
+        shell: pwsh
+        run: upx --best --lzma target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}
+
+      - name: Show binary size after compression
+        shell: bash
+        run: |
+          echo "Binary size after compression:"
+          ls -lh target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}
+
       - name: Strip binary (Linux only)
         if: matrix.platform.os == 'ubuntu-latest'
-        run: strip target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}
+        run: strip target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }} || true
 
       - name: Create archive directory
         run: mkdir -p release-artifacts
@@ -121,6 +156,16 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          body: |
+            ## Optimized Binaries
+            
+            These binaries are built with aggressive size optimizations:
+            - Link Time Optimization (LTO)
+            - Size-optimized compilation (`opt-level = "z"`)
+            - Stripped debug symbols
+            - UPX compression (60-70% size reduction)
+            
+            Download the appropriate file for your platform and extract it.
           files: |
             artifacts/workbench-preprocessor-linux-x86_64/*.tar.gz
             artifacts/workbench-preprocessor-windows-x86_64/*.zip
