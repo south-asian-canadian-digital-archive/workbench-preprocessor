@@ -19,9 +19,28 @@ fn is_effectively_empty(value: &str) -> bool {
 }
 
 fn contains_mojibake_markers(value: &str) -> bool {
-    value
-        .chars()
-        .any(|c| matches!(c, 'Ã' | 'â' | '€' | '™' | 'œ' | 'Â' | 'Î' | '¢' | '‰' | 'Š' | 'ž' | '¡' | '«' | '»' | 'š' | '‚' | '„' | '¬'))
+    value.chars().any(|c| {
+        matches!(
+            c,
+            'Ã' | 'â'
+                | '€'
+                | '™'
+                | 'œ'
+                | 'Â'
+                | 'Î'
+                | '¢'
+                | '‰'
+                | 'Š'
+                | 'ž'
+                | '¡'
+                | '«'
+                | '»'
+                | 'š'
+                | '‚'
+                | '„'
+                | '¬'
+        )
+    })
 }
 
 fn fix_common_mojibake(value: &str) -> Option<String> {
@@ -207,7 +226,7 @@ impl CsvModifier {
 
         // Stream processing for column modifiers
         let mut validation_logging_suppressed = false;
-        let mut seen_access_identifiers: HashSet<String> = HashSet::new();
+        let mut seen_access_identifiers: HashSet<String> = HashSet::with_capacity(1024); // Pre-allocate for better performance
         for (row_idx, result) in reader.records().enumerate() {
             let record = result?;
             let mut row_values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
@@ -534,11 +553,7 @@ impl ColumnModifier for FieldDescriptionSemicolonEscaper {
             previous = Some(ch);
         }
 
-        let escaped = if changed {
-            result
-        } else {
-            value.to_string()
-        };
+        let escaped = if changed { result } else { value.to_string() };
 
         ensure_wrapped_in_quotes(&escaped)
     }

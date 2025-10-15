@@ -46,7 +46,7 @@ impl ItemCsvGenerator {
             .position(|h| h == "fileTitle")
             .context("Column 'fileTitle' not found in CSV. Please ensure the input file contains a fileTitle column.")?;
 
-        let mut parent_data: HashMap<String, (String, usize)> = HashMap::new();
+        let mut parent_data: HashMap<String, (String, usize)> = HashMap::with_capacity(256); // Pre-allocate
         let mut stats = ItemGenerationStats::default();
 
         for result in reader.records() {
@@ -81,7 +81,7 @@ impl ItemCsvGenerator {
         let output_file = File::create(output_path).context("Failed to create output file")?;
         let mut writer = Writer::from_writer(output_file);
 
-    writer.write_record(["file_identifier", "title", "# of items", "field_member_of"])?;
+        writer.write_record(["file_identifier", "title", "# of items", "field_member_of"])?;
 
         let mut sorted_data: Vec<_> = parent_data.into_iter().collect();
         sorted_data.sort_by(|a, b| a.0.cmp(&b.0));
