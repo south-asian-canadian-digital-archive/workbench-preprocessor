@@ -71,6 +71,8 @@ pub enum Modifier {
     ParentId,
     /// Create file paths with parent directory and extensions
     FileExtension,
+    /// Populate field_model based on file extension mappings
+    FieldModel,
 }
 
 #[derive(Subcommand)]

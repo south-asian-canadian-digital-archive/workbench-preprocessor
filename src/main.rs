@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use env_logger::Env;
 use organise::{
-    Cli, Commands, CsvModifier, FileExtensionModifier, ItemCsvGenerator, ItemGenerationStats,
-    Modifier, ParentIdModifier, ProcessingStats,
+    Cli, Commands, CsvModifier, FieldModelModifier, FileExtensionModifier, ItemCsvGenerator,
+    ItemGenerationStats, Modifier, ParentIdModifier, ProcessingStats,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -134,7 +134,7 @@ fn init_logging() {
         .try_init();
 }
 fn determine_modifiers_to_run(only_run: &[Modifier], ignore_run: &[Modifier]) -> HashSet<Modifier> {
-    let all_modifiers = [Modifier::ParentId, Modifier::FileExtension];
+    let all_modifiers = [Modifier::ParentId, Modifier::FileExtension, Modifier::FieldModel];
 
     let mut active_modifiers: HashSet<Modifier> = if only_run.is_empty() {
         // Default behavior: run all modifiers
@@ -152,13 +152,13 @@ fn determine_modifiers_to_run(only_run: &[Modifier], ignore_run: &[Modifier]) ->
     active_modifiers
 }
 
-fn create_modifier(only_run: &[Modifier], ignore_run: &[Modifier]) -> CsvModifier {
+fn create_modifier(only_run: &[Modifier], ignore_run: &[Modifier]) -> Result<CsvModifier> {
     let active_modifiers = determine_modifiers_to_run(only_run, ignore_run);
     let mut modifier = CsvModifier::new();
 
     if active_modifiers.is_empty() {
         println!("WARNING: No modifiers will be applied - file will be copied without changes");
-        return modifier;
+        return Ok(modifier);
     }
 
     if active_modifiers.contains(&Modifier::ParentId) {
@@ -171,8 +171,14 @@ fn create_modifier(only_run: &[Modifier], ignore_run: &[Modifier]) -> CsvModifie
         modifier = modifier.add_column_modifier("file", FileExtensionModifier);
     }
 
+    if active_modifiers.contains(&Modifier::FieldModel) {
+        println!("Applying field_model modifier");
+        let field_model_modifier = FieldModelModifier::from_default_config()?;
+        modifier = modifier.add_column_modifier("field_model", field_model_modifier);
+    }
+
     // Show which modifiers were ignored/excluded
-    let all_modifiers = [Modifier::ParentId, Modifier::FileExtension];
+    let all_modifiers = [Modifier::ParentId, Modifier::FileExtension, Modifier::FieldModel];
     let excluded_modifiers: Vec<&Modifier> = all_modifiers
         .iter()
         .filter(|m| !active_modifiers.contains(m))
@@ -186,7 +192,7 @@ fn create_modifier(only_run: &[Modifier], ignore_run: &[Modifier]) -> CsvModifie
         println!("Skipping modifiers: {}", excluded_names.join(", "));
     }
 
-    modifier
+    Ok(modifier)
 }
 
 fn process_file(
@@ -203,7 +209,7 @@ fn process_file(
 
     println!("Processing file: {}", input);
 
-    let modifier = create_modifier(only_run, ignore_run);
+    let modifier = create_modifier(only_run, ignore_run)?;
     let stats = modifier.process_file(input, output)?;
 
     println!("Processing complete!");
@@ -236,7 +242,7 @@ fn process_sheets(
     let csv_url = CsvModifier::google_sheets_to_csv_url(url)?;
     println!("CSV export URL: {}", csv_url);
 
-    let modifier = create_modifier(only_run, ignore_run);
+    let modifier = create_modifier(only_run, ignore_run)?;
     let stats = modifier.process_google_sheets(url, output)?;
 
     println!("Processing complete!");

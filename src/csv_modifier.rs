@@ -1,3 +1,4 @@
+use crate::modifiers::{AccessIdentifierValidator, FieldDescriptionSemicolonEscaper};
 use anyhow::{Context, Result};
 use csv::{Reader, Writer};
 use encoding_rs::WINDOWS_1252;
@@ -5,7 +6,7 @@ use log::warn;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 
-fn normalize_cell(value: &str) -> &str {
+pub(crate) fn normalize_cell(value: &str) -> &str {
     let trimmed = value.trim();
     if trimmed.eq_ignore_ascii_case("#value!") {
         ""
@@ -88,22 +89,6 @@ fn replace_semicolon_subdelimiter(value: &mut String) -> bool {
         true
     } else {
         false
-    }
-}
-
-fn ensure_wrapped_in_quotes(value: &str) -> String {
-    if value.is_empty() {
-        return "\"\"".to_string();
-    }
-
-    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
-        value.to_string()
-    } else {
-        let mut wrapped = String::with_capacity(value.len() + 2);
-        wrapped.push('"');
-        wrapped.push_str(value);
-        wrapped.push('"');
-        wrapped
     }
 }
 
@@ -203,14 +188,21 @@ impl CsvModifier {
         reader: &mut Reader<R>,
         output_path: &str,
     ) -> Result<ProcessingStats> {
-        let headers = reader.headers()?.clone();
-        let headers: Vec<String> = headers.iter().map(|h| h.to_string()).collect();
+        let headers_snapshot = reader.headers()?.clone();
+        let mut headers: Vec<String> = headers_snapshot.iter().map(|h| h.to_string()).collect();
 
-        let header_map: HashMap<String, usize> = headers
+        let mut header_map: HashMap<String, usize> = headers
             .iter()
             .enumerate()
             .map(|(i, h)| (h.clone(), i))
             .collect();
+
+        for column_name in self.column_modifiers.keys() {
+            if column_name == "field_model" && !header_map.contains_key(column_name) {
+                header_map.insert(column_name.clone(), headers.len());
+                headers.push(column_name.clone());
+            }
+        }
 
         let title_column = ["title", "fileTitle"]
             .iter()
@@ -230,6 +222,9 @@ impl CsvModifier {
         for (row_idx, result) in reader.records().enumerate() {
             let record = result?;
             let mut row_values: Vec<String> = record.iter().map(|s| s.to_string()).collect();
+            if row_values.len() < headers.len() {
+                row_values.resize(headers.len(), String::new());
+            }
             let mut row_valid = true;
             let mut current_access_identifier: Option<String> = None;
             let mut sanitized_cells = 0;
@@ -503,137 +498,5 @@ pub struct ProcessingStats {
 impl ProcessingStats {
     pub fn new() -> Self {
         Self::default()
-    }
-}
-
-pub struct AccessIdentifierValidator;
-
-impl ColumnModifier for AccessIdentifierValidator {
-    fn modify(&self, value: &str, _row: &RowContext) -> String {
-        normalize_cell(value).to_string()
-    }
-
-    fn description(&self) -> &str {
-        "Validates accessIdentifier for item-level suitability"
-    }
-
-    fn validate(&self, value: &str, _row: &RowContext) -> bool {
-        let clean = normalize_cell(value);
-
-        if clean.is_empty() {
-            return false;
-        }
-
-        !(clean.ends_with("_00") || clean.ends_with("_000"))
-    }
-}
-
-pub struct FieldDescriptionSemicolonEscaper;
-
-impl ColumnModifier for FieldDescriptionSemicolonEscaper {
-    fn modify(&self, value: &str, _row: &RowContext) -> String {
-        if value.is_empty() {
-            return ensure_wrapped_in_quotes(value);
-        }
-
-        let mut result = String::with_capacity(value.len());
-        let mut changed = false;
-        let mut previous = None;
-
-        for ch in value.chars() {
-            if ch == ';' {
-                if previous != Some('\\') {
-                    result.push('\\');
-                    changed = true;
-                }
-                result.push(';');
-            } else {
-                result.push(ch);
-            }
-            previous = Some(ch);
-        }
-
-        let escaped = if changed { result } else { value.to_string() };
-
-        ensure_wrapped_in_quotes(&escaped)
-    }
-
-    fn description(&self) -> &str {
-        "Escapes unescaped semicolons in field_description"
-    }
-}
-
-pub struct ParentIdModifier;
-
-impl ColumnModifier for ParentIdModifier {
-    fn modify(&self, _value: &str, row: &RowContext) -> String {
-        let access_identifier = row.get_or_empty("accessIdentifier");
-
-        if !access_identifier.is_empty() {
-            // Extract parent_id by removing the last part after the last underscore
-            // Example: "2024_19_01_001" -> "2024_19_01"
-            if let Some(last_underscore) = access_identifier.rfind('_') {
-                access_identifier[..last_underscore].to_string()
-            } else {
-                access_identifier.to_string()
-            }
-        } else {
-            String::new()
-        }
-    }
-
-    fn description(&self) -> &str {
-        "Extracts parent_id from accessIdentifier by removing the last underscore segment"
-    }
-
-    fn validate(&self, _value: &str, row: &RowContext) -> bool {
-        !row.get_or_empty("accessIdentifier").is_empty()
-    }
-}
-
-pub struct FileExtensionModifier;
-
-impl ColumnModifier for FileExtensionModifier {
-    fn modify(&self, value: &str, row: &RowContext) -> String {
-        let file_extension = row
-            .get_first_non_empty(&["file_extension", "file_extention"])
-            .unwrap_or("");
-        let access_identifier = row.get_or_empty("accessIdentifier");
-        let value_clean = normalize_cell(value);
-
-        if file_extension.is_empty() || value_clean.is_empty() || access_identifier.is_empty() {
-            return value_clean.to_string();
-        }
-
-        // Extract parent_id from accessIdentifier
-        let parent_id = if let Some(last_underscore) = access_identifier.rfind('_') {
-            &access_identifier[..last_underscore]
-        } else {
-            access_identifier
-        };
-
-        // Remove existing extension from file if present
-        let base_name = if let Some(dot_pos) = value_clean.rfind('.') {
-            &value_clean[..dot_pos]
-        } else {
-            value_clean
-        };
-
-        // Create path: parent_id/filename.extension
-        format!("{}/{}.{}", parent_id, base_name, file_extension)
-    }
-
-    fn description(&self) -> &str {
-        "Creates file path with parent_id directory and file extension from accessIdentifier"
-    }
-
-    fn validate(&self, value: &str, row: &RowContext) -> bool {
-        let has_value = !normalize_cell(value).is_empty();
-        let has_extension = row
-            .get_first_non_empty(&["file_extension", "file_extention"])
-            .is_some();
-        let has_access_identifier = !row.get_or_empty("accessIdentifier").is_empty();
-
-        has_value && has_extension && has_access_identifier
     }
 }
