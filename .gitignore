@@ -38,6 +38,7 @@ output.csv
 sheets-output-modified.csv
 sheets-output-modified-items.csv
 items.csv
+*.csv
 
 # Backup files
 *.bak

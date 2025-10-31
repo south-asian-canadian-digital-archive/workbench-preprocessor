@@ -1,4 +1,4 @@
-use crate::modifiers::{AccessIdentifierValidator, FieldDescriptionSemicolonEscaper};
+use crate::modifiers::{AccessIdentifierValidator};
 use anyhow::{Context, Result};
 use csv::{Reader, Writer};
 use encoding_rs::WINDOWS_1252;
@@ -158,10 +158,7 @@ impl CsvModifier {
             "accessIdentifier".to_string(),
             Box::new(AccessIdentifierValidator),
         );
-        column_modifiers.insert(
-            "field_description".to_string(),
-            Box::new(FieldDescriptionSemicolonEscaper),
-        );
+        // Intentionally not modifying field_description: no forced quotes or semicolon escaping
 
         Self { column_modifiers }
     }

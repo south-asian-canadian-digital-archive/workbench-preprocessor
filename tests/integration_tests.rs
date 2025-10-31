@@ -41,11 +41,10 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(stats.total_rows, 3);
     assert_eq!(stats.cells_modified, 6); // 3 rows × 2 columns
     assert_eq!(stats.validation_failures, 0);
-    assert_eq!(stats.columns_processed.len(), 4);
+    assert_eq!(stats.columns_processed.len(), 3);
     assert!(stats.columns_processed.contains("parent_id"));
     assert!(stats.columns_processed.contains("file"));
     assert!(stats.columns_processed.contains("accessIdentifier"));
-    assert!(stats.columns_processed.contains("field_description"));
 
     // Verify output content
     let output_content = std::fs::read_to_string(&output_path)?;
@@ -348,12 +347,11 @@ fn test_text_sanitization_and_description_quotes() -> Result<(), Box<dyn std::er
 
     assert!(output_content.contains("People’s Archive"));
     assert!(output_content.contains("Montréal Stories"));
-    assert!(output_content.contains("\"\"People’s collection overview\"\""));
-    assert!(output_content.contains("\"\"Already quoted\"\""));
-    assert!(output_content.contains("\"\" Leading NBSP\"\""));
-    assert!(output_content.contains("\"\"Contains\\;Semicolon\"\""));
-    assert!(output_content.contains("\"\"Already has \\; escape\"\""));
-    assert!(!output_content.contains("Contains;Semicolon"));
+    assert!(output_content.contains("People’s collection overview"));
+    assert!(output_content.contains("Already quoted"));
+    assert!(output_content.contains(" Leading NBSP"));
+    assert!(output_content.contains("Contains;Semicolon"));
+    assert!(output_content.contains("Already has \\; escape"));
 
     Ok(())
 }
@@ -453,8 +451,7 @@ fn test_multiple_modifiers_integration() -> Result<(), Box<dyn std::error::Error
     assert_eq!(stats.total_rows, 2);
     assert_eq!(stats.cells_modified, 6); // 2 rows × 3 columns
     assert_eq!(stats.validation_failures, 0);
-    assert_eq!(stats.columns_processed.len(), 5);
-    assert!(stats.columns_processed.contains("field_description"));
+    assert_eq!(stats.columns_processed.len(), 4);
 
     let output_content = std::fs::read_to_string(&output_path)?;
 
