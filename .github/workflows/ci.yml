@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
@@ -62,13 +62,14 @@ jobs:
           path: |
             target/release/organise
             target/release/organise.exe
+            src/modifiers/field_model_mappings.toml
           if-no-files-found: ignore
           retention-days: 30
 
   build-check:
     name: Build Check
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

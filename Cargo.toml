@@ -2,6 +2,7 @@
 name = "workbench-preprocessor"
 version = "0.1.0"
 edition = "2021"
+include = ["src/modifiers/field_model_mappings.toml"]
 
 [lib]
 name = "organise"

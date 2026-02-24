@@ -2,13 +2,9 @@ use crate::csv_modifier::{normalize_cell, ColumnModifier, RowContext};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 
-const DEFAULT_TOML_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/modifiers/field_model_mappings.toml"
-);
+const DEFAULT_TOML_STR: &str = include_str!("field_model_mappings.toml");
 
 #[derive(Debug, Deserialize)]
 struct ModelCategory {
@@ -43,10 +39,11 @@ pub struct FieldModelModifier {
 
 impl FieldModelModifier {
     pub fn from_default_config() -> Result<Self> {
-        Self::from_toml_path(DEFAULT_TOML_PATH)
+        Self::from_toml_str(DEFAULT_TOML_STR)
     }
 
     pub fn from_toml_path<P: AsRef<Path>>(path: P) -> Result<Self> {
+        use std::fs;
         let contents = fs::read_to_string(&path).with_context(|| {
             format!(
                 "Failed to read field model mapping configuration from {}",

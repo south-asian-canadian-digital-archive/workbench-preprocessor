@@ -126,7 +126,7 @@ impl ItemCsvGenerator {
             .iter()
             .position(|h| h == "fileTitle")
             .context("Column 'fileTitle' not found in CSV. Please ensure the input file contains a fileTitle column.")?;
-        let field_date_idx_opt = headers.iter().position(|h| h == "field_date");
+        let field_date_idx_opt = headers.iter().position(|h| h == "field_date" || h == "field_edtf_date");
 
         #[derive(Default)]
         struct GroupData {
@@ -195,7 +195,7 @@ impl ItemCsvGenerator {
         let output_file = File::create(output_path).context("Failed to create output file")?;
         let mut writer = Writer::from_writer(output_file);
 
-        writer.write_record(["file_identifier", "title", "# of items", "field_member_of", "field_date"])?;
+        writer.write_record(["file_identifier", "title", "# of items", "field_member_of", "field_edtf_date"])?;
 
         let mut sorted_data: Vec<_> = parent_data.into_iter().collect();
         sorted_data.sort_by(|a, b| a.0.cmp(&b.0));

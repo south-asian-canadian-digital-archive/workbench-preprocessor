@@ -3,8 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'  # Triggers on version tags like v1.0.0, v2.1.3, etc.
-  workflow_dispatch:  # Allows manual triggering
+      - "v*.*.*" # Triggers on version tags like v1.0.0, v2.1.3, etc.
+  workflow_dispatch: # Allows manual triggering
 
 env:
   CARGO_TERM_COLOR: always
@@ -101,6 +101,7 @@ jobs:
         if: matrix.platform.os == 'ubuntu-latest'
         run: |
           cp target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }} release-artifacts/
+          cp src/modifiers/field_model_mappings.toml release-artifacts/
           cp README.md release-artifacts/ || true
           cp LICENSE release-artifacts/ || true
 
@@ -109,6 +110,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" -Destination "release-artifacts/"
+          Copy-Item "src/modifiers/field_model_mappings.toml" -Destination "release-artifacts/"
           Copy-Item "README.md" -Destination "release-artifacts/" -ErrorAction SilentlyContinue
           Copy-Item "LICENSE" -Destination "release-artifacts/" -ErrorAction SilentlyContinue
 
@@ -158,13 +160,13 @@ jobs:
           generate_release_notes: true
           body: |
             ## Optimized Binaries
-            
+
             These binaries are built with aggressive size optimizations:
             - Link Time Optimization (LTO)
             - Size-optimized compilation (`opt-level = "z"`)
             - Stripped debug symbols
             - UPX compression (60-70% size reduction)
-            
+
             Download the appropriate file for your platform and extract it.
           files: |
             artifacts/workbench-preprocessor-linux-x86_64/*.tar.gz

@@ -1,0 +1,296 @@
+# Islandora Model to File Extension Mappings
+# This configuration maps file extensions to Islandora content models
+# Reference: https://islandora.github.io/documentation/user-documentation/content-models/
+
+# Audio Model
+# For audio files and recordings
+[audio]
+model = "Audio"
+extensions = [
+	"mp3",
+	"wav",
+	"aac",
+	"flac",
+	"ogg",
+	"oga",
+	"m4a",
+	"wma",
+	"aiff",
+	"aif",
+	"opus",
+	"wv",
+]
+
+# Video Model
+# For video files and moving images
+[video]
+model = "Video"
+extensions = [
+	"mp4",
+	"avi",
+	"mov",
+	"wmv",
+	"flv",
+	"mkv",
+	"webm",
+	"m4v",
+	"mpg",
+	"mpeg",
+	"3gp",
+	"ogv",
+	"mts",
+	"m2ts",
+]
+
+# Image Model
+# For still images and photographs
+[image]
+model = "Image"
+extensions = [
+	"jpg",
+	"jpeg",
+	"png",
+	"gif",
+	"tif",
+	"tiff",
+	"bmp",
+	"jp2",
+	"jpf",
+	"jpx",
+	"jpm",
+	"svg",
+	"webp",
+	"heic",
+	"heif",
+	"ico",
+	"psd",
+	"raw",
+	"cr2",
+	"nef",
+	"orf",
+	"sr2",
+]
+
+# Digital Document Model
+# For text documents, PDFs, and other document formats
+[digital_document]
+model = "Digital Document"
+extensions = [
+	"pdf",
+	"doc",
+	"docx",
+	"odt",
+	"rtf",
+	"txt",
+	"md",
+	"epub",
+	"mobi",
+	"azw",
+	"azw3",
+	"html",
+	"htm",
+	"xml",
+	"tex",
+	"xls",
+	"xlsx",
+	"ods",
+	"ppt",
+	"pptx",
+	"odp",
+	"csv",
+]
+
+# Binary Model
+# For generic binary files, executables, and unknown formats
+[binary]
+model = "Binary"
+extensions = [
+	"bin",
+	"exe",
+	"dll",
+	"so",
+	"dylib",
+	"app",
+	"dmg",
+	"iso",
+	"img",
+	"zip",
+	"tar",
+	"gz",
+	"bz2",
+	"7z",
+	"rar",
+	"sit",
+	"sitx",
+	"dat",
+	"db",
+	"sql",
+	"json",
+	"yml",
+	"yaml",
+	"toml",
+	"ini",
+	"cfg",
+	"config",
+]
+
+# Page Model
+# For individual pages within paged content (books, newspapers)
+# Typically used programmatically rather than by extension
+[page]
+model = "Page"
+extensions = []
+description = "Individual pages are typically not identified by extension but by context within Paged Content"
+
+# Paged Content Model
+# For multi-page items like books, manuscripts, etc.
+# Often a container for Page objects
+[paged_content]
+model = "Paged Content"
+extensions = []
+description = "Container for books and multi-page documents; pages are children of this object"
+
+# Collection Model
+# For grouping related items together
+[collection]
+model = "Collection"
+extensions = []
+description = "Container for grouping related objects; not associated with specific file types"
+
+# Compound Object Model
+# For complex objects made up of multiple related items
+[compound_object]
+model = "Compound Object"
+extensions = []
+description = "Container for objects composed of multiple parts or related items"
+
+# Newspaper Model
+# For newspaper publications (a specialized form of paged content)
+[newspaper]
+model = "Newspaper"
+extensions = []
+description = "Container for newspaper issues and pages"
+
+# Publication Issue Model
+# For individual issues of serial publications
+[publication_issue]
+model = "Publication Issue"
+extensions = []
+description = "Individual issues of periodicals, journals, or newspapers"
+
+# Extension to Model Lookup
+# This section provides a reverse mapping for quick lookup
+# Format: extension = "Model Name"
+[extension_lookup]
+# Audio
+mp3 = "Audio"
+wav = "Audio"
+aac = "Audio"
+flac = "Audio"
+ogg = "Audio"
+oga = "Audio"
+m4a = "Audio"
+wma = "Audio"
+aiff = "Audio"
+aif = "Audio"
+opus = "Audio"
+wv = "Audio"
+
+# Video
+mp4 = "Video"
+avi = "Video"
+mov = "Video"
+wmv = "Video"
+flv = "Video"
+mkv = "Video"
+webm = "Video"
+m4v = "Video"
+mpg = "Video"
+mpeg = "Video"
+"3gp" = "Video"
+ogv = "Video"
+mts = "Video"
+m2ts = "Video"
+
+# Image
+jpg = "Image"
+jpeg = "Image"
+png = "Image"
+gif = "Image"
+tif = "Image"
+tiff = "Image"
+bmp = "Image"
+jp2 = "Image"
+jpf = "Image"
+jpx = "Image"
+jpm = "Image"
+svg = "Image"
+webp = "Image"
+heic = "Image"
+heif = "Image"
+ico = "Image"
+psd = "Image"
+raw = "Image"
+cr2 = "Image"
+nef = "Image"
+orf = "Image"
+sr2 = "Image"
+
+# Digital Document
+pdf = "Digital Document"
+doc = "Digital Document"
+docx = "Digital Document"
+odt = "Digital Document"
+rtf = "Digital Document"
+txt = "Digital Document"
+md = "Digital Document"
+epub = "Digital Document"
+mobi = "Digital Document"
+azw = "Digital Document"
+azw3 = "Digital Document"
+html = "Digital Document"
+htm = "Digital Document"
+xml = "Digital Document"
+tex = "Digital Document"
+xls = "Digital Document"
+xlsx = "Digital Document"
+ods = "Digital Document"
+ppt = "Digital Document"
+pptx = "Digital Document"
+odp = "Digital Document"
+csv = "Digital Document"
+
+# Binary (catch-all for other files)
+bin = "Binary"
+exe = "Binary"
+dll = "Binary"
+so = "Binary"
+dylib = "Binary"
+app = "Binary"
+dmg = "Binary"
+iso = "Binary"
+img = "Binary"
+zip = "Binary"
+tar = "Binary"
+gz = "Binary"
+bz2 = "Binary"
+"7z" = "Binary"
+rar = "Binary"
+sit = "Binary"
+sitx = "Binary"
+dat = "Binary"
+db = "Binary"
+sql = "Binary"
+json = "Binary"
+yml = "Binary"
+yaml = "Binary"
+toml = "Binary"
+ini = "Binary"
+cfg = "Binary"
+config = "Binary"
+
+# Default Model
+# Used when no extension match is found
+[default]
+model = "Binary"
+description = "Default model for files with unknown or unrecognized extensions"

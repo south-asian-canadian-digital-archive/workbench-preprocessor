@@ -41,6 +41,7 @@ echo ""
 echo "Moving binaries to bin/ folder..."
 mv target/release/${BIN_NAME} bin/${BIN_NAME}-linux
 mv target/x86_64-pc-windows-gnu/release/${BIN_NAME}.exe bin/${BIN_NAME}.exe
+cp src/modifiers/field_model_mappings.toml bin/field_model_mappings.toml
 
 echo ""
 echo "All builds completed successfully!"
