@@ -9,8 +9,7 @@ pub use cli::{Cli, Commands, Modifier};
 pub use csv_modifier::{ColumnModifier, CsvModifier, ProcessingStats, RowContext};
 pub use item_csv_generator::{ItemCsvGenerator, ItemGenerationStats};
 pub use modifiers::{
-    AccessIdentifierValidator, FieldDescriptionSemicolonEscaper, FieldModelModifier,
-    FileExtensionModifier, ParentIdModifier,
+    AccessIdentifierValidator, FieldModelModifier, FileExtensionModifier, ParentIdModifier,
 };
 
 pub use pipeline::{

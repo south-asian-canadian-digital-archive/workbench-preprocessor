@@ -78,15 +78,6 @@ fn sanitize_text_in_place(value: &mut String) -> bool {
     changed
 }
 
-fn replace_semicolon_subdelimiter(value: &mut String) -> bool {
-    if value.contains(';') {
-        *value = value.replace(';', "|");
-        true
-    } else {
-        false
-    }
-}
-
 pub trait ColumnModifier {
     fn modify(&self, value: &str, row: &RowContext) -> String;
     fn description(&self) -> &str;
@@ -456,7 +447,8 @@ impl CsvModifier {
                     continue;
                 }
 
-                if replace_semicolon_subdelimiter(cell) {
+                if cell.contains(';') {
+                    *cell = cell.replace(';', "|");
                     stats.cells_modified += 1;
                 }
             }
