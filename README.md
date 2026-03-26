@@ -309,6 +309,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### CLI-Equivalent Pipeline API
+
+If you want the same behavior as the `organise` CLI (default output filenames, modifier selection via `only_run`/`ignore_run`, and `--full`), use the pipeline helpers:
+
+```rust
+use organise::{Modifier, ProcessResult};
+use organise::{
+    process_csv_and_maybe_generate_items,
+    process_google_sheets_and_maybe_generate_items,
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let res: ProcessResult = process_csv_and_maybe_generate_items(
+        "input.csv",
+        None,        // explicit output file (CLI: --output)
+        None,        // output directory (CLI: --output-dir)
+        &[],         // only_run (CLI: --only-run, default is all)
+        &[],         // ignore_run (CLI: --ignore-run)
+        true,        // full (CLI: --full)
+        None,        // items_output (CLI: --items-output)
+        Some("19"),  // node (CLI: -n/--node, used when full=true)
+    )?;
+
+    println!("processed: {}", res.processed_output_path);
+    if let Some(items_path) = res.items_output_path {
+        println!("items: {}", items_path);
+    }
+    Ok(())
+}
+```
+
+Google Sheets pipeline:
+
+```rust
+let res = process_google_sheets_and_maybe_generate_items(
+    "https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0",
+    None,  // --output
+    None,  // --output-dir
+    &[],   // --only-run
+    &[],   // --ignore-run
+    true,  // --full
+    None,  // --items-output
+    Some("19"),
+)?;
+```
+
+`generate-items` subcommand wrapper (defaults output to `items.csv`):
+
+```rust
+let items_stats = organise::generate_items_from_source(
+    Some("input-modified.csv"),
+    None,
+    None,          // defaults to items.csv
+    Some("19"),
+)?;
+println!("total items: {}", items_stats.total_items);
+```
+
 ### Custom Modifiers
 
 ```rust

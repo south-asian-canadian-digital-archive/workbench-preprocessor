@@ -14,11 +14,6 @@ pub(crate) fn normalize_cell(value: &str) -> &str {
         trimmed
     }
 }
-
-fn is_effectively_empty(value: &str) -> bool {
-    normalize_cell(value).is_empty()
-}
-
 fn contains_mojibake_markers(value: &str) -> bool {
     value.chars().any(|c| {
         matches!(
@@ -373,7 +368,7 @@ impl CsvModifier {
                             if stats.validation_failures <= 25 {
                                 let mut missing_fields = Vec::new();
 
-                                if is_effectively_empty(&original_cell_value) {
+                                if normalize_cell(&original_cell_value).is_empty(){
                                     missing_fields.push(column_name.as_str());
                                 }
 
