@@ -39,12 +39,13 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify statistics
     assert_eq!(stats.total_rows, 3);
-    assert_eq!(stats.cells_modified, 6); // 3 rows × 2 columns
+    assert_eq!(stats.cells_modified, 9); // 3 rows × (parent_id + file + field_accessIdentifier)
     assert_eq!(stats.validation_failures, 0);
-    assert_eq!(stats.columns_processed.len(), 3);
+    assert_eq!(stats.columns_processed.len(), 4);
     assert!(stats.columns_processed.contains("parent_id"));
     assert!(stats.columns_processed.contains("file"));
     assert!(stats.columns_processed.contains("accessIdentifier"));
+    assert!(stats.columns_processed.contains("field_accessIdentifier"));
 
     // Verify output content
     let output_content = std::fs::read_to_string(&output_path)?;
@@ -53,7 +54,7 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
     // Check header
     assert_eq!(
         lines[0],
-        "accessIdentifier,file,file_extension,parent_id,title"
+        "accessIdentifier,file,file_extension,parent_id,title,field_accessIdentifier"
     );
 
     // Check first row
@@ -67,6 +68,35 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
     // Check third row
     assert!(lines[3].contains("2024_20_02"));
     assert!(lines[3].contains("2024_20_02/report.docx"));
+
+    Ok(())
+}
+
+/// Google Sheets exports often omit derived columns such as `parent_id`; they must still be created.
+#[test]
+fn test_csv_without_parent_id_column_gets_derived_parent_id() -> Result<(), Box<dyn std::error::Error>>
+{
+    let csv_content = r#"accessIdentifier,file,file_extension,fileTitle
+2024_19_01_001,document,pdf,First Document"#;
+
+    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
+    let output_path = format!("{}_output.csv", input_path);
+
+    let modifier = CsvModifier::new()
+        .add_column_modifier("parent_id", ParentIdModifier)
+        .add_column_modifier("file", FileExtensionModifier);
+
+    let stats = modifier.process_file(&input_path, &output_path)?;
+    assert_eq!(stats.total_rows, 1);
+
+    let output_content = std::fs::read_to_string(&output_path)?;
+    let lines: Vec<&str> = output_content.lines().collect();
+    assert!(
+        lines[0].contains("parent_id"),
+        "header should include parent_id: {}",
+        lines[0]
+    );
+    assert!(lines[1].contains("2024_19_01"), "{}", lines[1]);
 
     Ok(())
 }
@@ -89,14 +119,14 @@ fn test_csv_processing_with_file_extention_alias() -> Result<(), Box<dyn std::er
 
     assert_eq!(stats.total_rows, 2);
     assert_eq!(stats.validation_failures, 0);
-    assert_eq!(stats.cells_modified, 4);
+    assert_eq!(stats.cells_modified, 6);
 
     let output_content = std::fs::read_to_string(&output_path)?;
     let mut lines = output_content.lines();
 
     assert_eq!(
         lines.next().unwrap(),
-        "accessIdentifier,file,file_extention,parent_id,title"
+        "accessIdentifier,file,file_extention,parent_id,title,field_accessIdentifier"
     );
 
     let first_row = lines.next().unwrap();
@@ -169,7 +199,7 @@ fn test_csv_processing_with_validation_failures() -> Result<(), Box<dyn std::err
     assert_eq!(stats.total_rows, 2);
     assert_eq!(stats.skipped_rows, 2);
     assert!(stats.validation_failures > 0);
-    assert_eq!(stats.cells_modified, 3); // Row 1: 2 modifications, Row 3: 1 modification
+    assert_eq!(stats.cells_modified, 5); // Row 1: 3 mods, Row 3: 2 mods (parent_id + field_accessIdentifier)
 
     // Verify that the valid row was processed correctly
     let output_content = std::fs::read_to_string(&output_path)?;
@@ -243,7 +273,7 @@ fn test_rows_with_zero_suffix_access_identifier_are_skipped(
 
     assert_eq!(stats.skipped_rows, 1);
     assert_eq!(stats.total_rows, 1);
-    assert_eq!(stats.cells_modified, 2);
+    assert_eq!(stats.cells_modified, 3);
     assert_eq!(stats.validation_failures, 1);
 
     let output_content = std::fs::read_to_string(&output_path)?;
@@ -274,7 +304,7 @@ fn test_duplicate_access_identifiers_are_skipped() -> Result<(), Box<dyn std::er
     assert_eq!(stats.total_rows, 2);
     assert_eq!(stats.skipped_rows, 1);
     assert_eq!(stats.validation_failures, 1);
-    assert_eq!(stats.cells_modified, 4);
+    assert_eq!(stats.cells_modified, 6);
 
     let output_content = std::fs::read_to_string(&output_path)?;
     assert!(output_content.contains("2024_19_01/document.pdf"));
@@ -449,9 +479,9 @@ fn test_multiple_modifiers_integration() -> Result<(), Box<dyn std::error::Error
     let stats = modifier.process_file(&input_path, &output_path)?;
 
     assert_eq!(stats.total_rows, 2);
-    assert_eq!(stats.cells_modified, 6); // 2 rows × 3 columns
+    assert_eq!(stats.cells_modified, 8); // 2 rows × 4 modifiers
     assert_eq!(stats.validation_failures, 0);
-    assert_eq!(stats.columns_processed.len(), 4);
+    assert_eq!(stats.columns_processed.len(), 5);
 
     let output_content = std::fs::read_to_string(&output_path)?;
 
@@ -555,7 +585,7 @@ fn test_performance_integration() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify processing completed successfully
     assert_eq!(stats.total_rows, 1000);
-    assert_eq!(stats.cells_modified, 2000); // 1000 rows × 2 columns
+    assert_eq!(stats.cells_modified, 3000); // 1000 rows × 3 modifiers
     assert_eq!(stats.validation_failures, 0);
 
     // Performance should be reasonable (less than 1 second for 1000 rows)

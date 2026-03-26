@@ -159,6 +159,8 @@ Generate a summary `items.csv` file containing unique parent IDs, their titles, 
 - `title`: Title associated with each parent ID (from `fileTitle`)
 - `# of items`: Count of how many times each parent ID appears
 - `field_member_of`: Empty by default, or populated with the value passed via `--node`
+- `field_edtf_date`: Derived date summary (month/year or average year) when date data is available
+- `field_fileidentifier`: Same value as `file_identifier` (duplicate column for Drupal-style field mapping)
 
 **Example**:
 ```bash
@@ -174,10 +176,10 @@ Generate a summary `items.csv` file containing unique parent IDs, their titles, 
 
 This will create an `items.csv` like:
 ```csv
-file_identifier,title,# of items,field_member_of
-2024_19_01,Annual Report 2024,3,
-2024_19_02,Photo Gallery Spring,2,
-2024_20_01,Monthly Financial Report,1,
+file_identifier,title,# of items,field_member_of,field_edtf_date,field_fileidentifier
+2024_19_01,Annual Report 2024,3,,,2024_19_01
+2024_19_02,Photo Gallery Spring,2,,,2024_19_02
+2024_20_01,Monthly Financial Report,1,,,2024_20_01
 ```
 
 ### Command Line Options
@@ -258,6 +260,12 @@ Output written to: data-modified.csv
 ## Built-in Modifiers
 
 Every run automatically includes a lightweight validator for the `accessIdentifier` column before other modifiers execute. Additional modifiers can be toggled with `--only-run` / `--ignore-run` as needed.
+
+**Automatic column mapping (processed CSV)**:
+
+- `accessIdentifier` is duplicated into `field_accessIdentifier` (new column) when the source column exists.
+- `boxIdentifier` is renamed to `field_boxIdentifier` when present (skipped if `field_boxIdentifier` already exists).
+- `envelopeIdentifier` is renamed to `field_envelopeIdentifier` when present (skipped if `field_envelopeIdentifier` already exists).
 
 ### ParentIdModifier
 Extracts parent IDs from `accessIdentifier` columns by removing the last underscore segment.
@@ -470,7 +478,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Groups rows by unique `parent_id` values
 - Counts occurrences of each parent ID
 - Associates each parent ID with its corresponding title
-- Outputs a summary CSV with columns: `file_identifier`, `title`, `# of items`, `field_member_of`
+- Outputs a summary CSV with columns: `file_identifier`, `title`, `# of items`, `field_member_of`, `field_edtf_date`, `field_fileidentifier`
 - Ignores rows where `parent_id` is empty or resolves to `#VALUE!`
 - Optionally populates `field_member_of` with a provided node identifier
 

@@ -13,7 +13,7 @@ pub struct Cli {
     #[arg(
         value_name = "INPUT",
         conflicts_with = "url",
-        required_unless_present_any = ["url", "command"]
+        required_unless_present_any = ["url"]
     )]
     pub input: Option<String>,
 
@@ -30,12 +30,7 @@ pub struct Cli {
     pub output_dir: Option<String>,
 
     /// File name or path for the generated items CSV when using --full
-    #[arg(
-        long,
-        value_name = "FILE",
-        requires = "full",
-        conflicts_with = "command"
-    )]
+    #[arg(long, value_name = "FILE", requires = "full")]
     pub items_output: Option<String>,
 
     /// Only run the specified modifiers (overrides default behavior)
@@ -51,7 +46,7 @@ pub struct Cli {
     pub stats: bool,
 
     /// Run both processing and item generation in a single pass
-    #[arg(long, conflicts_with = "command")]
+    #[arg(long)]
     pub full: bool,
 
     /// Node identifier to use when running --full
@@ -59,8 +54,7 @@ pub struct Cli {
         short = 'n',
         long = "node",
         value_name = "NODE",
-        requires = "full",
-        conflicts_with = "command"
+        requires = "full"
     )]
     pub node: Option<String>,
 }

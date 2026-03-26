@@ -235,6 +235,7 @@ pub fn generate_items_from_source(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn process_csv_and_maybe_generate_items(
     input_path: &str,
     explicit_output: Option<&str>,
@@ -278,6 +279,7 @@ pub fn process_csv_and_maybe_generate_items(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn process_google_sheets_and_maybe_generate_items(
     url: &str,
     explicit_output: Option<&str>,

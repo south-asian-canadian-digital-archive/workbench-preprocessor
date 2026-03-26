@@ -1,4 +1,4 @@
-use crate::modifiers::{AccessIdentifierValidator};
+use crate::modifiers::{AccessIdentifierValidator, CopyFromColumnModifier};
 use anyhow::{Context, Result};
 use csv::{Reader, Writer};
 use encoding_rs::WINDOWS_1252;
@@ -127,6 +127,27 @@ impl<'a> RowContext<'a> {
     }
 }
 
+/// Renames legacy column headers to Drupal-style `field_*` names when the target name is absent.
+fn apply_header_renames(headers: &mut [String], header_map: &mut HashMap<String, usize>) {
+    const RENAMES: &[(&str, &str)] = &[
+        ("boxIdentifier", "field_boxIdentifier"),
+        ("envelopeIdentifier", "field_envelopeIdentifier"),
+    ];
+
+    for &(from, to) in RENAMES {
+        if header_map.contains_key(to) {
+            continue;
+        }
+        if let Some(&idx) = header_map.get(from) {
+            header_map.remove(from);
+            header_map.insert(to.to_string(), idx);
+            if let Some(h) = headers.get_mut(idx) {
+                *h = to.to_string();
+            }
+        }
+    }
+}
+
 pub struct CsvModifier {
     column_modifiers: BTreeMap<String, Box<dyn ColumnModifier>>,
 }
@@ -143,6 +164,10 @@ impl CsvModifier {
         column_modifiers.insert(
             "accessIdentifier".to_string(),
             Box::new(AccessIdentifierValidator),
+        );
+        column_modifiers.insert(
+            "field_accessIdentifier".to_string(),
+            Box::new(CopyFromColumnModifier::new("accessIdentifier")),
         );
         // Intentionally not modifying field_description: no forced quotes or semicolon escaping
 
@@ -180,8 +205,24 @@ impl CsvModifier {
             .map(|(i, h)| (h.clone(), i))
             .collect();
 
+        apply_header_renames(&mut headers, &mut header_map);
+
+        // Ensure columns exist for modifiers that populate derived values when the source CSV
+        // (e.g. Google Sheets export) omits them.
+        const AUTO_ADD_DERIVED_COLUMNS: &[&str] = &["field_model", "parent_id", "file"];
+
         for column_name in self.column_modifiers.keys() {
-            if column_name == "field_model" && !header_map.contains_key(column_name) {
+            if header_map.contains_key(column_name) {
+                continue;
+            }
+            let add = if column_name == "field_accessIdentifier" {
+                header_map.contains_key("accessIdentifier")
+            } else if AUTO_ADD_DERIVED_COLUMNS.contains(&column_name.as_str()) {
+                true
+            } else {
+                false
+            };
+            if add {
                 header_map.insert(column_name.clone(), headers.len());
                 headers.push(column_name.clone());
             }
