@@ -217,10 +217,8 @@ impl CsvModifier {
             }
             let add = if column_name == "field_accessIdentifier" {
                 header_map.contains_key("accessIdentifier")
-            } else if AUTO_ADD_DERIVED_COLUMNS.contains(&column_name.as_str()) {
-                true
             } else {
-                false
+                AUTO_ADD_DERIVED_COLUMNS.contains(&column_name.as_str())
             };
             if add {
                 header_map.insert(column_name.clone(), headers.len());
@@ -400,7 +398,7 @@ impl CsvModifier {
                             if stats.validation_failures <= 25 {
                                 let mut missing_fields = Vec::new();
 
-                                if normalize_cell(&original_cell_value).is_empty(){
+                                if normalize_cell(&original_cell_value).is_empty() {
                                     missing_fields.push(column_name.as_str());
                                 }
 
