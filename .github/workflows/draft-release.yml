@@ -1,0 +1,198 @@
+# Multi-platform build, SHA256 checksums, and a draft GitHub release.
+# Run manually: Actions → "Draft release (multi-platform)" → Run workflow → enter tag (e.g. v1.0.0).
+
+name: Draft release (multi-platform)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0). Used as tag_name for the draft; ensure it matches your versioning."
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform.name }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+            binary: organise
+            package: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+            binary: organise.exe
+            package: zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: darwin-aarch64
+            binary: organise
+            package: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: darwin-x86_64
+            binary: organise
+            package: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo git
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --release --verbose --target ${{ matrix.platform.target }}
+
+      - name: Install UPX (Linux)
+        if: matrix.platform.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx
+
+      - name: Install UPX (Windows)
+        if: matrix.platform.os == 'windows-latest'
+        shell: pwsh
+        run: choco install upx -y
+
+      - name: Compress with UPX (Linux)
+        if: matrix.platform.os == 'ubuntu-latest'
+        continue-on-error: true
+        run: upx --best --lzma "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}"
+
+      - name: Compress with UPX (Windows)
+        if: matrix.platform.os == 'windows-latest'
+        continue-on-error: true
+        shell: pwsh
+        run: upx --best --lzma "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}"
+
+      # UPX often breaks Mach-O; skip on macOS.
+
+      - name: Strip (Linux)
+        if: matrix.platform.os == 'ubuntu-latest'
+        run: strip "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" || true
+
+      - name: Strip (macOS)
+        if: matrix.platform.os == 'macos-latest'
+        run: strip "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" || true
+
+      # Linux/macOS: single .tar.gz. Windows: .zip. All include executable + field_model_mappings.toml (+ README/LICENSE).
+      - name: Package distribution (tar.gz)
+        if: matrix.platform.package == 'tar.gz'
+        run: |
+          mkdir -p release-artifacts
+          cp "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" release-artifacts/
+          cp src/modifiers/field_model_mappings.toml release-artifacts/
+          cp README.md release-artifacts/ 2>/dev/null || true
+          cp LICENSE release-artifacts/ 2>/dev/null || true
+          ( cd release-artifacts && tar czf "../workbench-preprocessor-${{ matrix.platform.name }}.tar.gz" . )
+
+      - name: Package distribution (zip)
+        if: matrix.platform.package == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
+          Copy-Item "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" -Destination release-artifacts/
+          Copy-Item "src/modifiers/field_model_mappings.toml" -Destination release-artifacts/
+          Copy-Item "README.md" -Destination release-artifacts/ -ErrorAction SilentlyContinue
+          Copy-Item "LICENSE" -Destination release-artifacts/ -ErrorAction SilentlyContinue
+          Compress-Archive -Path "release-artifacts/*" -DestinationPath "workbench-preprocessor-${{ matrix.platform.name }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbench-preprocessor-${{ matrix.platform.name }}
+          path: workbench-preprocessor-${{ matrix.platform.name }}.${{ matrix.platform.package }}
+          if-no-files-found: error
+
+  release:
+    name: Draft release + checksums
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: workbench-preprocessor-*
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: find artifacts -type f -print
+
+      - name: Generate SHASUMS256.txt
+        run: |
+          mkdir -p release-upload
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp -t release-upload {} +
+          cd release-upload
+          shopt -s nullglob
+          sums=( *.tar.gz *.zip )
+          if (( ${#sums[@]} == 0 )); then
+            echo "No archives found under artifacts/"
+            exit 1
+          fi
+          sha256sum "${sums[@]}" | sort -k2 > SHASUMS256.txt
+          cat SHASUMS256.txt
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          prerelease: false
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }} (draft)
+          generate_release_notes: true
+          body: |
+            ## Checksums
+
+            Verify downloads with:
+
+            ```bash
+            sha256sum -c SHASUMS256.txt
+            ```
+
+            ## Binaries
+
+            Each archive contains **`organise`** (or **`organise.exe`** on Windows), **`field_model_mappings.toml`**, and optional README/LICENSE.
+
+            - **linux-x86_64** — `.tar.gz`
+            - **darwin-aarch64** / **darwin-x86_64** — `.tar.gz`
+            - **windows-x86_64** — `.zip`
+
+            Built with release profile (LTO, strip where applicable). Linux/Windows binaries may be UPX-compressed when compression succeeds.
+          files: |
+            release-upload/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

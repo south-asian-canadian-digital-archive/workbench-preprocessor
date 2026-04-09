@@ -20,10 +20,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
             binary: organise
+            package: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
             binary: organise.exe
+            package: zip
 
     steps:
       - name: Checkout code
@@ -95,6 +97,7 @@ jobs:
         run: strip target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }} || true
 
       - name: Create archive directory
+        shell: bash
         run: mkdir -p release-artifacts
 
       - name: Copy binary to archive (Linux)
@@ -115,12 +118,12 @@ jobs:
           Copy-Item "LICENSE" -Destination "release-artifacts/" -ErrorAction SilentlyContinue
 
       - name: Create tar.gz archive (Linux)
-        if: matrix.platform.os == 'ubuntu-latest'
-        working-directory: release-artifacts
-        run: tar czf ../workbench-preprocessor-${{ matrix.platform.name }}.tar.gz *
+        if: matrix.platform.package == 'tar.gz'
+        run: |
+          ( cd release-artifacts && tar czf "../workbench-preprocessor-${{ matrix.platform.name }}.tar.gz" . )
 
       - name: Create zip archive (Windows)
-        if: matrix.platform.os == 'windows-latest'
+        if: matrix.platform.package == 'zip'
         shell: pwsh
         run: Compress-Archive -Path release-artifacts/* -DestinationPath workbench-preprocessor-${{ matrix.platform.name }}.zip
 
@@ -128,10 +131,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: workbench-preprocessor-${{ matrix.platform.name }}
-          path: |
-            workbench-preprocessor-${{ matrix.platform.name }}.tar.gz
-            workbench-preprocessor-${{ matrix.platform.name }}.zip
-          if-no-files-found: ignore
+          path: workbench-preprocessor-${{ matrix.platform.name }}.${{ matrix.platform.package }}
+          if-no-files-found: error
 
   release:
     name: Create Release
@@ -167,7 +168,9 @@ jobs:
             - Stripped debug symbols
             - UPX compression (60-70% size reduction)
 
-            Download the appropriate file for your platform and extract it.
+            **Linux** ships as **`.tar.gz`**; **Windows** as **`.zip`**. Each archive contains **`organise`** (or **`organise.exe`**) and **`field_model_mappings.toml`**.
+
+            Extract the archive for your platform.
           files: |
             artifacts/workbench-preprocessor-linux-x86_64/*.tar.gz
             artifacts/workbench-preprocessor-windows-x86_64/*.zip
