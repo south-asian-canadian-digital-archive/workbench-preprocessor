@@ -1,5 +1,6 @@
 # Multi-platform build, SHA256 checksums, and a draft GitHub release.
-# Run manually: Actions → "Draft release (multi-platform)" → Run workflow → enter tag (e.g. v1.0.0).
+# Run manually: Actions → "Draft release (multi-platform)" → Run workflow.
+# Leave "tag" empty to auto-pick the next patch (latest vX.Y.Z tag + 1, or v{Cargo.toml version} if no tags).
 
 name: Draft release (multi-platform)
 
@@ -7,14 +8,64 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v1.0.0). Used as tag_name for the draft; ensure it matches your versioning."
-        required: true
+        description: "Release tag (e.g. v1.2.0). Leave empty for auto: bump patch from latest v*.*.* git tag, else v + Cargo.toml version."
+        required: false
+        default: ""
         type: string
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  resolve-version:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+    steps:
+      - name: Checkout (tags + history)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute tag
+        id: tag
+        run: |
+          set -euo pipefail
+          MANUAL="${{ inputs.tag }}"
+          MANUAL="$(echo -n "$MANUAL" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          if [ -n "$MANUAL" ]; then
+            echo "release_tag=${MANUAL}" >> "$GITHUB_OUTPUT"
+            echo "Using workflow input tag: ${MANUAL}"
+            exit 0
+          fi
+
+          git fetch --tags --force 2>/dev/null || true
+          LATEST="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1 || true)"
+          if [ -n "$LATEST" ]; then
+            V="${LATEST#v}"
+            MAJOR="${V%%.*}"
+            REST="${V#*.}"
+            MINOR="${REST%%.*}"
+            PATCH="${REST#*.}"
+            PATCH="${PATCH%%[^0-9]*}"
+            PATCH="$((PATCH + 1))"
+            NEXT="v${MAJOR}.${MINOR}.${PATCH}"
+            echo "release_tag=${NEXT}" >> "$GITHUB_OUTPUT"
+            echo "Auto tag (bump patch after ${LATEST}): ${NEXT}"
+            exit 0
+          fi
+
+          VER="$(grep -m1 '^version =' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
+          if [ -z "$VER" ]; then
+            echo "Could not read version from Cargo.toml and no v*.*.* tags found." >&2
+            exit 1
+          fi
+          NEXT="v${VER}"
+          echo "release_tag=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "No semver tags; using Cargo.toml version as tag: ${NEXT}"
+
   build:
     name: Build ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.os }}
@@ -45,7 +96,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -53,19 +104,19 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo git
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/git
           key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache target
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: target
           key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
@@ -128,7 +179,7 @@ jobs:
           Compress-Archive -Path "release-artifacts/*" -DestinationPath "workbench-preprocessor-${{ matrix.platform.name }}.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: workbench-preprocessor-${{ matrix.platform.name }}
           path: workbench-preprocessor-${{ matrix.platform.name }}.${{ matrix.platform.package }}
@@ -136,14 +187,14 @@ jobs:
 
   release:
     name: Draft release + checksums
-    needs: build
+    needs: [build, resolve-version]
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: artifacts
           pattern: workbench-preprocessor-*
@@ -171,10 +222,12 @@ jobs:
         with:
           draft: true
           prerelease: false
-          tag_name: ${{ inputs.tag }}
-          name: ${{ inputs.tag }} (draft)
+          tag_name: ${{ needs.resolve-version.outputs.release_tag }}
+          name: ${{ needs.resolve-version.outputs.release_tag }} (draft)
           generate_release_notes: true
           body: |
+            **Tag:** `${{ needs.resolve-version.outputs.release_tag }}`
+
             ## Checksums
 
             Verify downloads with:
