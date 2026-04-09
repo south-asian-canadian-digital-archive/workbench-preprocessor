@@ -209,7 +209,8 @@ impl CsvModifier {
 
         // Ensure columns exist for modifiers that populate derived values when the source CSV
         // (e.g. Google Sheets export) omits them.
-        const AUTO_ADD_DERIVED_COLUMNS: &[&str] = &["field_model", "parent_id", "file"];
+        const AUTO_ADD_DERIVED_COLUMNS: &[&str] =
+            &["field_model", "parent_id", "file", "field_language"];
 
         for column_name in self.column_modifiers.keys() {
             if header_map.contains_key(column_name) {

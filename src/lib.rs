@@ -10,7 +10,7 @@ pub use csv_modifier::{ColumnModifier, CsvModifier, ProcessingStats, RowContext}
 pub use item_csv_generator::{ItemCsvGenerator, ItemGenerationStats};
 pub use modifiers::{
     AccessIdentifierValidator, CopyFromColumnModifier, FieldModelModifier, FileExtensionModifier,
-    ParentIdModifier,
+    LanguageModifier, ParentIdModifier, DEFAULT_LANGUAGE_CODE_PATH, resolve_language_mapping_url,
 };
 
 pub use pipeline::{

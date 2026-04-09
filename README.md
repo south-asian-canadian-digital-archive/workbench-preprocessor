@@ -1,612 +1,162 @@
 # CSV Organiser
 
-A high-performance, trait-based CSV processing library and CLI tool written in Rust that supports streaming operations for large datasets and can process data from both local files and Google Sheets.
-
-## Tools Included
-
-This project ships a single CLI binary, **`organise`**, which can:
-
-- Process local CSV files with configurable column modifiers
-- Stream Google Sheets data directly into the modifier pipeline
-- Generate collection-level `items.csv` summaries (either from an existing CSV or directly from a Google Sheet)
-- Run the full pipeline end-to-end with a single flag
+Rust CLI and library for streaming CSV cleanup and Islandora-oriented field shaping: local files or Google Sheets in, modified CSV (and optional `items.csv`) out.
 
 ## Features
 
-- **Streaming Processing**: Efficiently handles large CSV files (400k+ rows) with minimal memory usage
-- **Trait-Based Architecture**: Extensible design using the `ColumnModifier` trait
-- **Cross-Column Access**: Modifiers can access values from other columns in the same row
-- **Built-in Modifiers**: Ready-to-use modifiers for common tasks
-- **Google Sheets Integration**: Process CSV data directly from Google Sheets URLs
-- **Comprehensive Statistics**: Detailed processing statistics and validation reporting
-- **Container Row Filtering**: Automatically skips `accessIdentifier` values ending with `_00` or `_000`
-- **Identifier Hygiene**: Removes rows missing an `accessIdentifier` and suppresses duplicate identifiers before they reach the output
-- **Title Safeguards**: Skips rows whose `title`/`fileTitle` values are empty after normalisation and flags them in the source column for auditing
-- **Text Sanitisation**: Repairs common mojibake (e.g. `MontrÃ©al` → `Montréal`, `Peopleâ€™s` → `People’s`), replaces stray non-breaking spaces, and guarantees `field_description` values are wrapped in quotes for downstream tooling
-- **Flexible Output Control**: Override filenames or route artefacts into a dedicated output directory
-- **Command Line Interface**: Easy-to-use CLI for batch processing
-- **Error Handling**: Robust error handling with context information
+- **Streaming CSV** — large files without loading everything into memory  
+- **Google Sheets** — paste an edit URL; the tool fetches CSV export  
+- **Modifiers** — `parent_id`, `file` paths, `field_model`, language code → taxonomy ID, plus built-in `accessIdentifier` checks  
+- **Items summary** — optional `items.csv` with parent groupings for collections  
+- **Validation** — duplicate / empty access IDs, container rows (`_00` / `_000`), title checks  
+- **Text cleanup** — common mojibake, NBSPs; sane handling of `field_description` and `;` in cells  
+- **Output control** — `--output`, `--output-dir`, `--full`, `--items-output`, `--node`  
+
+**Using it from Rust?** See **[LIBRARY.md](LIBRARY.md)** for the `organise` crate API, pipeline helpers, and examples.
+
+---
 
 ## Installation
 
-### Pre-built Binaries (Recommended)
+### Pre-built binaries
 
-Download the latest pre-built binaries from the [Releases](https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor/releases) page:
+From [Releases](https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor):
 
-- **Linux**: `workbench-preprocessor-linux-x86_64.tar.gz`
-- **Windows**: `workbench-preprocessor-windows-x86_64.zip`
+| Platform | Archive |
+|----------|---------|
+| Linux x86_64 | `workbench-preprocessor-linux-x86_64.tar.gz` |
+| Windows x86_64 | `workbench-preprocessor-windows-x86_64.zip` |
 
-Extract the archive and you'll find the `organise` binary (or `organise.exe` on Windows).
+Extract and keep **`organise`** (or **`organise.exe`**) and **`field_model_mappings.toml`** in the **same folder** — the binary loads that TOML for `field_model` mappings.
 
-### Building from Source
-
-Build the project:
+### Build from source
 
 ```bash
 cargo build --release
+# Binary: target/release/organise  (or organise.exe on Windows)
 ```
 
-This creates one binary in `target/release/`:
-- **`organise`** – combined processor and items generator
+---
 
-The binary will be available at `target/release/organise`.
+## How to use
 
-## Quick Start
+Replace `./target/release/organise` with `organise` (or `.\organise.exe`) if you use a release build on your `PATH`.
+
+### Process a local CSV
+
+Writes `<input-stem>-modified.csv` next to the input unless you set `--output` / `--output-dir`.
 
 ```bash
-# Process a local CSV (auto-writes input-modified.csv)
-./target/release/organise input.csv
-
-# Process a Google Sheet (auto-writes sheets-output-modified.csv)
-./target/release/organise --url 'https://docs.google.com/spreadsheets/d/...'
-
-# Generate items from an existing CSV
-./target/release/organise generate-items output.csv
-
-# Generate items and set a node ID for field_member_of
-./target/release/organise generate-items output.csv --node 19
-
-# End-to-end: process input.csv then build items CSV alongside it
-./target/release/organise --full input.csv
-
-# End-to-end with node reference prefilled
-./target/release/organise --full input.csv --node 19
-
-# Place outputs in a dedicated directory (filenames inferred)
-./target/release/organise --full input.csv --output-dir ./out
-
-# Override processed/items filenames during a full run
-./target/release/organise --full input.csv --output processed.csv --items-output items.csv
+organise data.csv
+organise data.csv --output out.csv
+organise data.csv --output-dir ./build
+organise data.csv --stats
 ```
 
-## Command Line Usage
+### Process a Google Sheet
 
-### Process Local CSV Files
+Sheet must be reachable as CSV (typically “anyone with the link can view”). Default output name: `sheets-output-modified.csv`.
 
 ```bash
-# Basic file processing (applies all modifiers, writes input-modified.csv)
-./target/release/organise input.csv
-
-# Custom output filename
-./target/release/organise input.csv --output custom-output.csv
-
-# Only run specific modifiers
-./target/release/organise input.csv --only-run parent-id
-
-# Skip specific modifiers
-./target/release/organise input.csv --ignore-run file-extension
-
-# Show detailed stats after processing
-./target/release/organise input.csv --stats
-
-# Process and immediately build items CSV alongside the result
-./target/release/organise --full input.csv
-
-# Send all artefacts to a specific directory (filenames inferred)
-./target/release/organise input.csv --output-dir ./out
-
-# Full run with custom processed/items filenames
-./target/release/organise --full input.csv --output-dir ./out \
-    --output processed.csv --items-output items.csv
+organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0'
+organise --url 'https://docs.google.com/...' --output-dir ./out --full
 ```
 
-### Process Google Sheets
+Supported URL shapes include `/edit`, `/edit#gid=…`, and `?usp=sharing`.
+
+### Generate `items.csv` only
+
+Input must include **`parent_id`** and **`fileTitle`**.
 
 ```bash
-# Download + process Google Sheet (writes sheets-output-modified.csv)
-./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0'
-
-# Custom output filename
-./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0' \
-    --output custom-output.csv
-
-# Drop processed and items files in a specific directory (full run)
-./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit' \
-    --full --output-dir ./out
-
-# Apply only certain modifiers and show stats
-./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit' \
-    --only-run parent-id --stats
-
-# Full pipeline: process Sheets data then generate items summary
-./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit' --full
+organise generate-items modified.csv
+organise generate-items modified.csv --output items.csv --node 19
+organise generate-items --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0'
 ```
 
-### Generate Items CSV
-
-Generate a summary `items.csv` file containing unique parent IDs, their titles, item counts, and a `field_member_of` column that can optionally be pre-populated with a node identifier.
+### Full run (process + items)
 
 ```bash
-# From an existing CSV on disk (default output: items.csv)
-./target/release/organise generate-items input-modified.csv
-
-# Specify custom output
-./target/release/organise generate-items input-modified.csv --output custom-items.csv
-
-# Generate directly from a Google Sheet
-./target/release/organise generate-items --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0'
-
-# Generate items and set the node reference in field_member_of
-./target/release/organise generate-items input-modified.csv --node 19
+organise --full data.csv
+organise --full data.csv --node 19 --output-dir ./out
+organise --full data.csv --output processed.csv --items-output items.csv
 ```
 
-**Input Requirements**: The input CSV must contain:
-- `parent_id`: Column with parent identifiers
-- `fileTitle`: Column with titles for each item
+### Common flags
 
-**Output Format**: The generated `items.csv` will have the following columns:
-- `file_identifier`: Unique parent IDs from the `parent_id` column
-- `title`: Title associated with each parent ID (from `fileTitle`)
-- `# of items`: Count of how many times each parent ID appears
-- `field_member_of`: Empty by default, or populated with the value passed via `--node`
-- `field_edtf_date`: Derived date summary (month/year or average year) when date data is available
-- `field_fileidentifier`: Same value as `file_identifier` (duplicate column for Drupal-style field mapping)
+| Flag | Purpose |
+|------|---------|
+| `--url <URL>` | Input is a Google Sheet (instead of a file path) |
+| `-o, --output <FILE>` | Processed CSV path |
+| `--output-dir <DIR>` | Put default or relative outputs under this directory |
+| `--only-run <MODIFIER>` | Run only these modifiers (repeatable) |
+| `--ignore-run <MODIFIER>` | Skip these modifiers (repeatable; wins over `--only-run`) |
+| `--stats` | Print extra processing stats |
+| `--full` | After processing, also write `items.csv` |
+| `--items-output <FILE>` | With `--full`, path for items file |
+| `-n, --node <ID>` | With `--full` or `generate-items`, fill `field_member_of` |
+| `--language-url <URL>` | Override language mapping JSON URL (see below) |
 
-**Example**:
-```bash
-# First, process your CSV to add parent_id
-./target/release/organise file -i data.csv -o data-modified.csv
+**Modifier names** for `--only-run` / `--ignore-run`: `parent-id`, `file-extension`, `field-model`, `language`.
 
-# Then generate the items file
-./target/release/organise generate-items -i data-modified.csv -o items.csv
+### Output naming
 
-# Include a node ID in field_member_of
-./target/release/organise generate-items -i data-modified.csv --node 19
-```
+- **Local file** — `name.csv` → `name-modified.csv` by default.  
+- **Google Sheets** — default `sheets-output-modified.csv`.  
+- **`--full`** — items file defaults to `<processed-stem>-items.csv` unless `--items-output` is set.  
+- **`--output-dir`** — relative paths (including defaults) go under that directory; absolute `--output` wins.
 
-This will create an `items.csv` like:
-```csv
-file_identifier,title,# of items,field_member_of,field_edtf_date,field_fileidentifier
-2024_19_01,Annual Report 2024,3,,,2024_19_01
-2024_19_02,Photo Gallery Spring,2,,,2024_19_02
-2024_20_01,Monthly Financial Report,1,,,2024_20_01
-```
+### `field_language` column (`language` modifier)
 
-### Command Line Options
+Maps values in the **`field_language`** column (ISO-style codes) to taxonomy term IDs using a JSON export. If the modifier runs, the binary **must** fetch that JSON first; on failure it exits without writing output.
 
-#### Command Structure
+- **`--language-url`** — full URL to the JSON.  
+- Or **`ISLANDORA_LANGUAGE_URL`** (full URL).  
+- Or **`ISLANDORA_BASE_URL`** + path `/lang-code` (default base `http://localhost:8000`).  
 
-- **Default mode**: Provide a positional input path or `--url` (mutually exclusive). Optional flags configure modifiers, output, statistics, `--full`, and `--node` (when paired with `--full`).
-- **`generate-items` subcommand**: Provide either a positional input path or `--url` (mutually exclusive). Optional `--output` overrides the destination, and `--node` populates every `field_member_of` value.
+Unknown codes are left unchanged. To skip the call entirely: `--ignore-run language`.
 
-#### Common Flags
+### Built-in rules (always on)
 
-- `--url <URL>`: Treat the input as a Google Sheet (auto-converted to CSV).
-- `--output <FILE>`: Override the generated output filename.
-- `--output-dir <DIR>`: Write all generated files into the specified directory (filenames inferred when relative).
-- `--only-run <MODIFIER>`: Only apply the specified modifier(s); repeatable.
-- `--ignore-run <MODIFIER>`: Skip the specified modifier(s); repeatable.
-- `--stats`: Print detailed processing statistics after the run.
-- `--full`: After processing, immediately generate the items summary next to the output CSV.
-- `-n, --node <NODE>` (_generate-items_ or `--full`): Populate the `field_member_of` column with the provided value.
-- `--items-output <FILE>` (_requires `--full`_): Override the filename (or path) for the generated items CSV.
+- **`accessIdentifier`** validated: non-empty, no duplicates, rows ending in `_00` / `_000` skipped (containers).  
+- **`accessIdentifier` → `field_accessIdentifier`** copy when the source column exists.  
+- **`boxIdentifier` → `field_boxIdentifier`**, **`envelopeIdentifier` → `field_envelopeIdentifier`** when targets are missing.  
+- Rows with empty **`title`** / **`fileTitle`** after normalisation are skipped and marked in the first column for review.
 
-#### Output Filename Generation
+### Modifier summary
 
-- **For local files**: If no output is specified, the output filename is generated by appending `-modified` to the input filename before the extension
-  - `data.csv` → `data-modified.csv`
-  - `path/to/file.xlsx` → `path/to/file-modified.xlsx`
-  - `document` → `document-modified.csv`
-- **Output directories**: When `--output-dir` is provided, relative output filenames (including defaults) are written inside that directory. Absolute paths always win and ignore the directory override.
-- **Items CSV**: During `--full`, `--items-output` overrides the generated items filename. Otherwise, it inherits the processed filename with `-items` appended, respecting `--output-dir` when applicable.
+- **parent-id** — `parent_id` from last segment of `accessIdentifier` (e.g. `2024_19_01_001` → `2024_19_01`).  
+- **file-extension** — `file` becomes `parent_id/basename.ext` using `file_extension` or `file_extention`.  
+- **field-model** — fills `field_model` from extension via `field_model_mappings.toml`.  
+- **language** — replaces **`field_language`** cells with term IDs from JSON (see above).  
 
-- **For Google Sheets**: If no output is specified, defaults to `sheets-output-modified.csv`
+`#VALUE!`-style placeholders are treated as empty where applicable.
 
-- `parent-id`: Extract parent ID from accessIdentifier column
-- `file-extension`: Create file paths with parent directory and extensions
+### `items.csv` columns
 
-#### Modifier Behavior
+| Column | Meaning |
+|--------|---------|
+| `file_identifier` | Unique `parent_id` |
+| `title` | From `fileTitle` |
+| `# of items` | Row count per parent |
+| `field_member_of` | From `--node` if set |
+| `field_edtf_date` | Derived when date fields exist |
+| `field_fileidentifier` | Same as `file_identifier` for Drupal-style mapping |
 
-#### Available Modifiers
+---
 
-- **Default**: All available modifiers are applied
-- **--only-run**: Only the specified modifiers are applied (overrides default)
-- **--ignore-run**: The specified modifiers are excluded from the active set
-- **Precedence**: `--ignore-run` takes precedence over `--only-run` (if both specify the same modifier)
-
-#### Example Output
+## Logging
 
 ```bash
-$ ./target/release/organise file -i data.csv --stats
-
-Processing file: data.csv
-Applying parent_id modifier
-Applying file_extension modifier
-Processing complete!
-Processed 1000 rows
-Rows skipped: 12
-Modified 2000 cells
-Output written to: data-modified.csv
-
-Detailed Statistics:
-- Total rows processed: 1000
-- Rows skipped: 12
-- Cells modified: 2000
-- Validation failures: 0
-- Columns processed: 3
-    Columns: accessIdentifier, parent_id, file
-
-$ ./target/release/organise file -i data.csv --only-run parent-id
-
-Processing file: data.csv
-Applying parent_id modifier
-Skipping modifiers: file-extension
-Processing complete!
-Processed 1000 rows
-Modified 1000 cells
-Output written to: data-modified.csv
+RUST_LOG=warn organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0'
 ```
 
-## Built-in Modifiers
-
-Every run automatically includes a lightweight validator for the `accessIdentifier` column before other modifiers execute. Additional modifiers can be toggled with `--only-run` / `--ignore-run` as needed.
-
-**Automatic column mapping (processed CSV)**:
-
-- `accessIdentifier` is duplicated into `field_accessIdentifier` (new column) when the source column exists.
-- `boxIdentifier` is renamed to `field_boxIdentifier` when present (skipped if `field_boxIdentifier` already exists).
-- `envelopeIdentifier` is renamed to `field_envelopeIdentifier` when present (skipped if `field_envelopeIdentifier` already exists).
-
-### ParentIdModifier
-Extracts parent IDs from `accessIdentifier` columns by removing the last underscore segment.
-
-**Example**: `2024_19_01_001` → `2024_19_01`
-
-**Requirements**:
-- Target column: `parent_id`
-- Source column: `accessIdentifier` (must not be empty)
-
-**Placeholder Handling**: Values like `#VALUE!` (commonly produced by Google Sheets errors) are treated as empty and cleared during processing.
-
-### FileExtensionModifier  
-Creates file paths using parent ID directories and file extensions from other columns.
-
-**Example**: With `accessIdentifier="2024_19_01_001"`, `file="document"`, `file_extension="pdf"`
-**Result**: `2024_19_01/document.pdf`
-
-**Requirements**:
-- Target column: `file`
-- Source columns: `accessIdentifier`, `file_extension` (or legacy `file_extention`), all must not be empty
-
-**Placeholder Handling**: If `file`, `file_extension`, or `accessIdentifier` contain `#VALUE!`, the row is left unchanged for that modifier, the offending cell is cleared, and a warning is emitted.
-- Handles existing file extensions by replacing them
-
-### AccessIdentifierValidator (built-in)
-Validates the `accessIdentifier` column before other modifiers run. Rows with empty values or duplicate identifiers are rejected, and identifiers ending with `_00` or `_000` indicate container or collection records and cause the entire row to be skipped. Skipped rows appear in the processing summary so you can audit how many unusable records were removed.
-
-## Library Usage
-
-### Basic Usage
-
-```rust
-use organise::{CsvModifier, ParentIdModifier, FileExtensionModifier};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create modifier with built-in modifiers
-    let modifier = CsvModifier::new()
-        .add_column_modifier("parent_id", ParentIdModifier)
-        .add_column_modifier("file", FileExtensionModifier);
-    
-    // Process local CSV file
-    let stats = modifier.process_file("input.csv", "output.csv")?;
-    
-    println!("Processed {} rows successfully!", stats.total_rows);
-    println!("Modified {} cells", stats.cells_modified);
-    
-    Ok(())
-}
-```
-
-### CLI-Equivalent Pipeline API
-
-If you want the same behavior as the `organise` CLI (default output filenames, modifier selection via `only_run`/`ignore_run`, and `--full`), use the pipeline helpers:
-
-```rust
-use organise::{Modifier, ProcessResult};
-use organise::{
-    process_csv_and_maybe_generate_items,
-    process_google_sheets_and_maybe_generate_items,
-};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let res: ProcessResult = process_csv_and_maybe_generate_items(
-        "input.csv",
-        None,        // explicit output file (CLI: --output)
-        None,        // output directory (CLI: --output-dir)
-        &[],         // only_run (CLI: --only-run, default is all)
-        &[],         // ignore_run (CLI: --ignore-run)
-        true,        // full (CLI: --full)
-        None,        // items_output (CLI: --items-output)
-        Some("19"),  // node (CLI: -n/--node, used when full=true)
-    )?;
-
-    println!("processed: {}", res.processed_output_path);
-    if let Some(items_path) = res.items_output_path {
-        println!("items: {}", items_path);
-    }
-    Ok(())
-}
-```
-
-Google Sheets pipeline:
-
-```rust
-let res = process_google_sheets_and_maybe_generate_items(
-    "https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0",
-    None,  // --output
-    None,  // --output-dir
-    &[],   // --only-run
-    &[],   // --ignore-run
-    true,  // --full
-    None,  // --items-output
-    Some("19"),
-)?;
-```
-
-`generate-items` subcommand wrapper (defaults output to `items.csv`):
-
-```rust
-let items_stats = organise::generate_items_from_source(
-    Some("input-modified.csv"),
-    None,
-    None,          // defaults to items.csv
-    Some("19"),
-)?;
-println!("total items: {}", items_stats.total_items);
-```
-
-### Custom Modifiers
-
-```rust
-use organise::{CsvModifier, ColumnModifier, RowContext};
-
-struct PrefixModifier {
-    prefix: String,
-}
-
-impl ColumnModifier for PrefixModifier {
-    fn modify(&self, value: &str, _context: &RowContext) -> String {
-        format!("{}{}", self.prefix, value)
-    }
-
-    fn description(&self) -> &str {
-        "Adds a prefix to the column value"
-    }
-    
-    // Optional: add validation
-    fn validate(&self, value: &str, _context: &RowContext) -> bool {
-        !value.is_empty()
-    }
-}
-
-// Usage
-let modifier = CsvModifier::new()
-    .add_column_modifier("title", PrefixModifier { 
-        prefix: "DOC_".to_string() 
-    });
-```
-
-### Cross-Column Access
-
-```rust
-use organise::{ColumnModifier, RowContext};
-
-struct CrossColumnModifier;
-
-impl ColumnModifier for CrossColumnModifier {
-    fn modify(&self, value: &str, context: &RowContext) -> String {
-        // Access other columns in the same row
-        let other_value = context.get_or_empty("other_column");
-        let another_value = context.get("another_column").unwrap_or("default");
-        
-        format!("{}-{}-{}", value, other_value, another_value)
-    }
-    
-    fn description(&self) -> &str {
-        "Combines values from multiple columns"
-    }
-}
-```
-
-### Google Sheets Integration
-
-```rust
-use organise::CsvModifier;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let modifier = CsvModifier::new()
-        .add_column_modifier("parent_id", ParentIdModifier);
-    
-    // Process from Google Sheets URL
-    let sheets_url = "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit#gid=0";
-    let stats = modifier.process_google_sheets(sheets_url, "output.csv")?;
-    
-    println!("Processed {} rows from Google Sheets!", stats.total_rows);
-    
-    // Or just convert the URL
-    let csv_url = CsvModifier::google_sheets_to_csv_url(sheets_url)?;
-    println!("CSV export URL: {}", csv_url);
-    
-    Ok(())
-}
-```
-
-### Generating Items Summary
-
-```rust
-use organise::{CsvModifier, ItemCsvGenerator};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // First, process the CSV to add parent_id and other modifications
-    let modifier = CsvModifier::new()
-        .add_column_modifier("parent_id", ParentIdModifier)
-        .add_column_modifier("file", FileExtensionModifier);
-    
-    modifier.process_file("input.csv", "modified.csv")?;
-    
-    // Then generate the items.csv summary
-    ItemCsvGenerator::generate("modified.csv", "items.csv", None)?;
-    
-    println!("Items summary generated!");
-    
-    Ok(())
-}
-```
-
-`ItemCsvGenerator::generate`:
-- Reads a CSV file with `parent_id` and `fileTitle` columns
-- Groups rows by unique `parent_id` values
-- Counts occurrences of each parent ID
-- Associates each parent ID with its corresponding title
-- Outputs a summary CSV with columns: `file_identifier`, `title`, `# of items`, `field_member_of`, `field_edtf_date`, `field_fileidentifier`
-- Ignores rows where `parent_id` is empty or resolves to `#VALUE!`
-- Optionally populates `field_member_of` with a provided node identifier
-
-## Processing Statistics
-
-The `ProcessingStats` struct provides detailed information about the processing operation:
-
-```rust
-pub struct ProcessingStats {
-    pub total_rows: usize,            // Data rows written to the output
-    pub skipped_rows: usize,          // Rows omitted by validators
-    pub cells_modified: usize,        // Number of cells that were modified
-    pub validation_failures: usize,   // Number of validation failures
-    pub columns_processed: HashSet<String>, // Set of columns that were processed
-}
-```
-
-`skipped_rows` increases whenever a validator rejects the row (for example, container-level access identifiers such as `2024_19_01_000`). Those rows never reach the output CSV, keeping downstream items generation focused on item-level records.
-
-### Logging Validation Failures
-
-Validation failures now emit structured warnings through the standard Rust logging system. By default, the first 25 failures are printed; additional failures are summarized to avoid flooding the console.
-
-To surface the warnings, run the CLI with the desired log level (they use the `warn` level by default):
-
-```bash
-RUST_LOG=warn ./target/release/organise --url 'https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0'
-```
-
-## Error Handling
-
-The library uses the `anyhow` crate for comprehensive error handling:
-
-- **File I/O errors**: Missing files, permission issues
-- **CSV parsing errors**: Malformed CSV data, encoding issues
-- **Network errors**: Failed HTTP requests for Google Sheets
-- **URL parsing errors**: Invalid Google Sheets URLs
-- **Validation errors**: Data that fails modifier validation
-
-## Performance
-
-The library is designed for high performance:
-
-- **Streaming Processing**: Processes CSV files row-by-row without loading entire file into memory
-- **Minimal Allocations**: Reuses string buffers and minimizes heap allocations
-- **Efficient I/O**: Uses buffered readers and writers for optimal disk performance
-- **Zero-Copy Operations**: Where possible, avoids unnecessary string copying
-
-**Benchmarks**: Successfully processes 400,000+ row CSV files with minimal memory usage.
-
-## Dependencies
-
-- `csv`: CSV reading and writing
-- `serde`: Serialization framework  
-- `anyhow`: Error handling
-- `reqwest`: HTTP client for Google Sheets integration
-- `url`: URL parsing and manipulation
-
-## Examples
-
-Run the included examples:
-
-```bash
-# Basic functionality test
-cargo run --example test_basic
-
-# Comprehensive test with built-in modifiers
-cargo run --example test_full
-```
-
-## Google Sheets Setup
-
-To use Google Sheets integration:
-
-1. Make your Google Sheet public (viewable by anyone with the link)
-2. Copy the share URL
-3. The library automatically converts it to the CSV export format
-
-**Supported URL formats**:
-- `https://docs.google.com/spreadsheets/d/SHEET_ID/edit#gid=0`
-- `https://docs.google.com/spreadsheets/d/SHEET_ID/edit?usp=sharing`
+---
 
 ## License
 
-This project is licensed under the MIT License.
+MIT — see [LICENSE](LICENSE) if present in the repo.
 
 ## Releases
 
-### Creating a New Release
-
-This project uses GitHub Actions to automatically build binaries for Linux and Windows when you create a new version tag.
-
-To create a new release:
-
-1. **Update version** (optional, but recommended):
-   ```bash
-   # Update version in Cargo.toml
-   vim Cargo.toml
-   ```
-
-2. **Commit your changes**:
-   ```bash
-   git add .
-   git commit -m "Prepare release v1.0.0"
-   git push origin main
-   ```
-
-3. **Create and push a version tag**:
-   ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
-   ```
-
-4. **GitHub Actions will automatically**:
-   - Build binaries for Linux (x86_64) and Windows (x86_64)
-   - Create a GitHub Release with both binaries attached
-   - Generate release notes from recent commits
-
-### Manual Release Trigger
-
-You can also manually trigger a release build from the GitHub Actions tab without creating a tag. This is useful for testing the build process.
-
-### Continuous Integration
-
-Every push to `main` or `develop` branches, and every pull request, will automatically:
-- Run code formatting checks (`cargo fmt`)
-- Run linting checks (`cargo clippy`)
-- Run all tests
-- Build the project
-
-This ensures code quality and prevents broken builds from being merged.
+Version tags trigger the release workflow (Linux `.tar.gz`, Windows `.zip`). Draft multi-platform builds are available as a separate manual workflow in `.github/workflows/`.

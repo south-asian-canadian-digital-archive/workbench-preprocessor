@@ -1,7 +1,8 @@
 use crate::csv_modifier::{CsvModifier, ProcessingStats};
 use crate::item_csv_generator::{ItemCsvGenerator, ItemGenerationStats};
 use crate::modifiers::{
-    FieldModelModifier, FileExtensionModifier, ParentIdModifier,
+    FieldModelModifier, FileExtensionModifier, LanguageModifier, ParentIdModifier,
+    resolve_language_mapping_url,
 };
 use crate::{Modifier};
 use anyhow::{Context, Result};
@@ -23,7 +24,12 @@ fn determine_modifiers_to_run(
     only_run: &[Modifier],
     ignore_run: &[Modifier],
 ) -> HashSet<Modifier> {
-    let all_modifiers = [Modifier::ParentId, Modifier::FileExtension, Modifier::FieldModel];
+    let all_modifiers = [
+        Modifier::ParentId,
+        Modifier::FileExtension,
+        Modifier::FieldModel,
+        Modifier::Language,
+    ];
 
     let mut active_modifiers: HashSet<Modifier> = if only_run.is_empty() {
         // Default behavior: run all modifiers
@@ -40,7 +46,11 @@ fn determine_modifiers_to_run(
     active_modifiers
 }
 
-fn create_modifier(only_run: &[Modifier], ignore_run: &[Modifier]) -> Result<CsvModifier> {
+fn create_modifier(
+    only_run: &[Modifier],
+    ignore_run: &[Modifier],
+    language_url: Option<&str>,
+) -> Result<CsvModifier> {
     let active_modifiers = determine_modifiers_to_run(only_run, ignore_run);
     let mut modifier = CsvModifier::new();
 
@@ -61,6 +71,12 @@ fn create_modifier(only_run: &[Modifier], ignore_run: &[Modifier]) -> Result<Csv
     if active_modifiers.contains(&Modifier::FieldModel) {
         let field_model_modifier = FieldModelModifier::from_default_config()?;
         modifier = modifier.add_column_modifier("field_model", field_model_modifier);
+    }
+
+    if active_modifiers.contains(&Modifier::Language) {
+        let url = resolve_language_mapping_url(language_url);
+        let language_modifier = LanguageModifier::new(&url)?;
+        modifier = modifier.add_column_modifier("field_language", language_modifier);
     }
 
     Ok(modifier)
@@ -242,6 +258,7 @@ pub fn process_csv_and_maybe_generate_items(
     output_dir: Option<&str>,
     only_run: &[Modifier],
     ignore_run: &[Modifier],
+    language_url: Option<&str>,
     full: bool,
     items_output: Option<&str>,
     node: Option<&str>,
@@ -256,7 +273,7 @@ pub fn process_csv_and_maybe_generate_items(
         output_dir,
     )?;
 
-    let modifier = create_modifier(only_run, ignore_run)?;
+    let modifier = create_modifier(only_run, ignore_run, language_url)?;
     let processing_stats = modifier.process_file(input_path, &processed_output_path)?;
 
     let (items_output_path, items_stats) = if full {
@@ -286,6 +303,7 @@ pub fn process_google_sheets_and_maybe_generate_items(
     output_dir: Option<&str>,
     only_run: &[Modifier],
     ignore_run: &[Modifier],
+    language_url: Option<&str>,
     full: bool,
     items_output: Option<&str>,
     node: Option<&str>,
@@ -295,7 +313,7 @@ pub fn process_google_sheets_and_maybe_generate_items(
         output_dir,
     )?;
 
-    let modifier = create_modifier(only_run, ignore_run)?;
+    let modifier = create_modifier(only_run, ignore_run, language_url)?;
     let processing_stats = modifier.process_google_sheets(url, &processed_output_path)?;
 
     let (items_output_path, items_stats) = if full {

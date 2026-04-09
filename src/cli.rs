@@ -41,6 +41,10 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub ignore_run: Vec<Modifier>,
 
+    /// Full URL for the language code → taxonomy term JSON (`field_code` → `tid`). Overrides `ISLANDORA_LANGUAGE_URL` and the default base + `/lang-code`.
+    #[arg(long, value_name = "URL")]
+    pub language_url: Option<String>,
+
     /// Show detailed processing statistics
     #[arg(long)]
     pub stats: bool,
@@ -67,6 +71,8 @@ pub enum Modifier {
     FileExtension,
     /// Populate field_model based on file extension mappings
     FieldModel,
+    /// Map field_language column codes to taxonomy term IDs via JSON export
+    Language,
 }
 
 #[derive(Subcommand)]
