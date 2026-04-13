@@ -130,8 +130,8 @@ impl<'a> RowContext<'a> {
 /// Renames legacy column headers to Drupal-style `field_*` names when the target name is absent.
 fn apply_header_renames(headers: &mut [String], header_map: &mut HashMap<String, usize>) {
     const RENAMES: &[(&str, &str)] = &[
-        ("boxIdentifier", "field_boxIdentifier"),
-        ("envelopeIdentifier", "field_envelopeIdentifier"),
+        ("boxIdentifier", "field_boxidentifier"),
+        ("envelopeIdentifier", "field_envelopeidentifier"),
     ];
 
     for &(from, to) in RENAMES {
@@ -166,7 +166,7 @@ impl CsvModifier {
             Box::new(AccessIdentifierValidator),
         );
         column_modifiers.insert(
-            "field_accessIdentifier".to_string(),
+            "field_accessidentifier".to_string(),
             Box::new(CopyFromColumnModifier::new("accessIdentifier")),
         );
         // Intentionally not modifying field_description: no forced quotes or semicolon escaping
@@ -216,7 +216,7 @@ impl CsvModifier {
             if header_map.contains_key(column_name) {
                 continue;
             }
-            let add = if column_name == "field_accessIdentifier" {
+            let add = if column_name == "field_accessidentifier" {
                 header_map.contains_key("accessIdentifier")
             } else {
                 AUTO_ADD_DERIVED_COLUMNS.contains(&column_name.as_str())
