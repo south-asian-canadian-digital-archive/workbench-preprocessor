@@ -180,7 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 `ItemCsvGenerator::generate`:
 
 - Expects `parent_id` and `fileTitle` columns.
-- Groups by `parent_id`, counts rows, emits `file_identifier`, `title`, `# of items`, `field_member_of`, `field_edtf_date`, `field_fileidentifier`.
+- Groups by `parent_id`, counts rows, emits `file_identifier`, `title`, `# of items`, `field_member_of`, `field_edtf_date`, `field_identifier`, `field_archival_level` (constant `File`).
 - Skips empty / `#VALUE!` `parent_id` rows.
 - Optional node ID fills `field_member_of`.
 

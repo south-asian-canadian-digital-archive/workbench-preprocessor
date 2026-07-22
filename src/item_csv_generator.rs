@@ -201,7 +201,8 @@ impl ItemCsvGenerator {
             "# of items",
             "field_member_of",
             "field_edtf_date",
-            "field_fileidentifier",
+            "field_identifier",
+            "field_archival_level",
         ])?;
 
         let mut sorted_data: Vec<_> = parent_data.into_iter().collect();
@@ -261,6 +262,7 @@ impl ItemCsvGenerator {
                 node_value,
                 field_date_value.as_str(),
                 file_identifier.as_str(),
+                "File",
             ])?;
         }
 

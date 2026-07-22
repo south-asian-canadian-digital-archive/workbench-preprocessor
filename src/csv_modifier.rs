@@ -166,7 +166,7 @@ impl CsvModifier {
             Box::new(AccessIdentifierValidator),
         );
         column_modifiers.insert(
-            "field_accessidentifier".to_string(),
+            "field_identifier".to_string(),
             Box::new(CopyFromColumnModifier::new("accessIdentifier")),
         );
         // Intentionally not modifying field_description: no forced quotes or semicolon escaping
@@ -216,7 +216,7 @@ impl CsvModifier {
             if header_map.contains_key(column_name) {
                 continue;
             }
-            let add = if column_name == "field_accessidentifier" {
+            let add = if column_name == "field_identifier" {
                 header_map.contains_key("accessIdentifier")
             } else {
                 AUTO_ADD_DERIVED_COLUMNS.contains(&column_name.as_str())

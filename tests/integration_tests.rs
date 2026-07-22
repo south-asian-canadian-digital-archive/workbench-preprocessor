@@ -39,13 +39,13 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify statistics
     assert_eq!(stats.total_rows, 3);
-    assert_eq!(stats.cells_modified, 9); // 3 rows × (parent_id + file + field_accessIdentifier)
+    assert_eq!(stats.cells_modified, 9); // 3 rows × (parent_id + file + field_identifier)
     assert_eq!(stats.validation_failures, 0);
     assert_eq!(stats.columns_processed.len(), 4);
     assert!(stats.columns_processed.contains("parent_id"));
     assert!(stats.columns_processed.contains("file"));
     assert!(stats.columns_processed.contains("accessIdentifier"));
-    assert!(stats.columns_processed.contains("field_accessIdentifier"));
+    assert!(stats.columns_processed.contains("field_identifier"));
 
     // Verify output content
     let output_content = std::fs::read_to_string(&output_path)?;
@@ -54,7 +54,7 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
     // Check header
     assert_eq!(
         lines[0],
-        "accessIdentifier,file,file_extension,parent_id,title,field_accessIdentifier"
+        "accessIdentifier,file,file_extension,parent_id,title,field_identifier"
     );
 
     // Check first row
@@ -126,7 +126,7 @@ fn test_csv_processing_with_file_extention_alias() -> Result<(), Box<dyn std::er
 
     assert_eq!(
         lines.next().unwrap(),
-        "accessIdentifier,file,file_extention,parent_id,title,field_accessIdentifier"
+        "accessIdentifier,file,file_extention,parent_id,title,field_identifier"
     );
 
     let first_row = lines.next().unwrap();
@@ -199,7 +199,7 @@ fn test_csv_processing_with_validation_failures() -> Result<(), Box<dyn std::err
     assert_eq!(stats.total_rows, 2);
     assert_eq!(stats.skipped_rows, 2);
     assert!(stats.validation_failures > 0);
-    assert_eq!(stats.cells_modified, 5); // Row 1: 3 mods, Row 3: 2 mods (parent_id + field_accessIdentifier)
+    assert_eq!(stats.cells_modified, 5); // Row 1: 3 mods, Row 3: 2 mods (parent_id + field_identifier)
 
     // Verify that the valid row was processed correctly
     let output_content = std::fs::read_to_string(&output_path)?;

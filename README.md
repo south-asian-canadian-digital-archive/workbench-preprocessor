@@ -141,7 +141,8 @@ Unknown codes are left unchanged. To skip the call entirely: `--ignore-run langu
 | `# of items` | Row count per parent |
 | `field_member_of` | From `--node` if set |
 | `field_edtf_date` | Derived when date fields exist |
-| `field_fileidentifier` | Same as `file_identifier` for Drupal-style mapping |
+| `field_identifier` | Same as `file_identifier` for Drupal-style mapping |
+| `field_archival_level` | Archival level for the parent node (constant `File`) |
 
 ---
 
