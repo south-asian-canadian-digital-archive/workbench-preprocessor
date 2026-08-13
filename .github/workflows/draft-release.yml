@@ -1,6 +1,7 @@
 # Multi-platform build, SHA256 checksums, and a draft GitHub release.
 # Run manually: Actions → "Draft release (multi-platform)" → Run workflow.
-# Leave "tag" empty to use v{version} from Cargo.toml. Fails if that tag already exists.
+# Leave "tag" empty to use v{version} from Cargo.toml; if that version was already released
+# the patch is bumped and Cargo.toml/Cargo.lock are committed back, so no manual edit is needed.
 
 name: Draft release (multi-platform)
 
@@ -8,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v1.2.0). Leave empty to use v + the version in Cargo.toml."
+        description: "Release tag (e.g. v1.2.0). Leave empty to use Cargo.toml's version, auto-bumping the patch if it was already released."
         required: false
         default: ""
         type: string
@@ -20,8 +21,11 @@ jobs:
   resolve-version:
     name: Resolve release tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       release_tag: ${{ steps.tag.outputs.release_tag }}
+      sha: ${{ steps.tag.outputs.sha }}
     steps:
       - name: Checkout (tags + history)
         uses: actions/checkout@v6
@@ -29,29 +33,46 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Compute tag
+      - name: Resolve tag, bumping Cargo.toml if it is stale
         id: tag
         run: |
           set -euo pipefail
+          read_ver() { grep -m1 '^version =' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/'; }
+          tag_exists() { git rev-parse -q --verify "refs/tags/$1" >/dev/null; }
+
           TAG="$(echo -n "${{ inputs.tag }}" | tr -d '[:space:]')"
           if [ -n "$TAG" ]; then
-            echo "Using workflow input tag: ${TAG}"
+            tag_exists "$TAG" && { echo "Tag ${TAG} already exists." >&2; exit 1; }
+            VER="${TAG#v}"
           else
-            VER="$(grep -m1 '^version =' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
+            VER="$(read_ver)"
             [ -n "$VER" ] || { echo "Could not read version from Cargo.toml" >&2; exit 1; }
+            # A hand-bumped Cargo.toml wins; otherwise bump the patch so releasing needs no manual edit.
+            if tag_exists "v${VER}"; then
+              VER="${VER%.*}.$(( ${VER##*.} + 1 ))"
+              while tag_exists "v${VER}"; do VER="${VER%.*}.$(( ${VER##*.} + 1 ))"; done
+              echo "Cargo.toml version was already released; bumping to ${VER}"
+            fi
             TAG="v${VER}"
-            echo "Using Cargo.toml version as tag: ${TAG}"
           fi
 
-          # Cargo.toml is the source of truth, so a stale version is a bumped-forgot, not a release.
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag ${TAG} already exists — bump version in Cargo.toml (or pass an explicit tag)." >&2
-            exit 1
+          # Cargo.toml is the source of truth for --version, so it must match the tag we ship.
+          if [ "$(read_ver)" != "$VER" ]; then
+            sed -i -E "0,/^version = \".*\"/s//version = \"${VER}\"/" Cargo.toml
+            sed -i -E "/^name = \"workbench-preprocessor\"$/{n;s/^version = \".*\"/version = \"${VER}\"/}" Cargo.lock
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -qm "chore: release ${TAG}" Cargo.toml Cargo.lock
+            git push -q origin HEAD:${{ github.ref_name }}
           fi
+
           echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${TAG} from $(git rev-parse --short HEAD)"
 
   build:
     name: Build ${{ matrix.platform.name }}
+    needs: resolve-version
     runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
@@ -81,6 +102,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve-version.outputs.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
