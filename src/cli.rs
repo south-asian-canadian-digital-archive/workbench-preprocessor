@@ -45,6 +45,11 @@ pub struct Cli {
     #[arg(long, value_name = "URL")]
     pub language_url: Option<String>,
 
+    /// Staged access directory. When set, every `file` path is checked against
+    /// disk, rewritten to where the file actually is, and missing files reported.
+    #[arg(long, value_name = "DIR")]
+    pub access_dir: Option<String>,
+
     /// Show detailed processing statistics
     #[arg(long)]
     pub stats: bool,

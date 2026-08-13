@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use env_logger::Env;
 use organise::{
-    Cli, Commands, CsvModifier, ItemGenerationStats, ProcessingStats,
+    Cli, Commands, CsvModifier, DiscoveryStats, ItemGenerationStats, ProcessingStats,
     generate_items_from_source,
     process_csv_and_maybe_generate_items,
     process_google_sheets_and_maybe_generate_items,
@@ -40,8 +40,13 @@ fn main() -> Result<()> {
                     cli.full,
                     cli.items_output.as_deref(),
                     cli.node.as_deref(),
+                    cli.access_dir.as_deref(),
                 )?;
                 print_processing_summary(&res.processing_stats, &res.processed_output_path, cli.stats);
+
+                if let Some(discovery) = res.discovery_stats.as_ref() {
+                    print_discovery_summary(discovery);
+                }
 
                 if let (Some(items_stats), Some(items_path)) = (res.items_stats.as_ref(), res.items_output_path.as_ref()) {
                     print_item_generation_summary(items_stats, items_path);
@@ -62,8 +67,13 @@ fn main() -> Result<()> {
                     cli.full,
                     cli.items_output.as_deref(),
                     cli.node.as_deref(),
+                    cli.access_dir.as_deref(),
                 )?;
                 print_processing_summary(&res.processing_stats, &res.processed_output_path, cli.stats);
+
+                if let Some(discovery) = res.discovery_stats.as_ref() {
+                    print_discovery_summary(discovery);
+                }
 
                 if let (Some(items_stats), Some(items_path)) = (res.items_stats.as_ref(), res.items_output_path.as_ref()) {
                     print_item_generation_summary(items_stats, items_path);
@@ -104,6 +114,20 @@ fn print_processing_summary(stats: &ProcessingStats, output: &str, show_stats: b
 
     if show_stats {
         print_detailed_stats(stats);
+    }
+}
+
+fn print_discovery_summary(stats: &DiscoveryStats) {
+    println!("\nFile discovery:");
+    println!("  - Paths already correct: {}", stats.matched);
+    println!("  - Paths rewritten to the staged file: {}", stats.relocated);
+    println!("  - Missing files: {}", stats.missing.len());
+
+    for (id, path) in stats.missing.iter().take(20) {
+        println!("    \u{26a0} {} -> {}", id, path);
+    }
+    if stats.missing.len() > 20 {
+        println!("    ... and {} more", stats.missing.len() - 20);
     }
 }
 

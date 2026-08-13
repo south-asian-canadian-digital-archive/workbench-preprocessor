@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         true,       // full (--full)
         None,       // items_output (--items-output)
         Some("19"), // node (-n / --node when full)
+        None,       // access_dir (--access-dir): resolve `file` paths against disk
     )?;
 
     println!("processed: {}", res.processed_output_path);
@@ -75,6 +76,7 @@ let res = process_google_sheets_and_maybe_generate_items(
     true,
     None,
     Some("19"),
+    None, // access_dir
 )?;
 ```
 

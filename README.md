@@ -10,6 +10,7 @@ Rust CLI and library for streaming CSV cleanup and Islandora-oriented field shap
 - **Items summary** — optional `items.csv` with parent groupings for collections  
 - **Validation** — duplicate / empty access IDs, container rows (`_00` / `_000`), title checks  
 - **Text cleanup** — common mojibake, NBSPs; sane handling of `field_description` and `;` in cells  
+- **File discovery** — `--access-dir` checks every `file` path against the staged files, rewrites the ones that moved, and lists the ones that are missing  
 - **Output control** — `--output`, `--output-dir`, `--full`, `--items-output`, `--node`  
 
 **Using it from Rust?** See **[LIBRARY.md](LIBRARY.md)** for the `organise` crate API, pipeline helpers, and examples.
@@ -91,6 +92,7 @@ organise --full data.csv --output processed.csv --items-output items.csv
 | `--output-dir <DIR>` | Put default or relative outputs under this directory |
 | `--only-run <MODIFIER>` | Run only these modifiers (repeatable) |
 | `--ignore-run <MODIFIER>` | Skip these modifiers (repeatable; wins over `--only-run`) |
+| `--access-dir <DIR>` | Resolve `file` paths against the staged access files; rewrite moved ones, report missing ones |
 | `--stats` | Print extra processing stats |
 | `--full` | After processing, also write `items.csv` |
 | `--items-output <FILE>` | With `--full`, path for items file |

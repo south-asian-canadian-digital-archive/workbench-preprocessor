@@ -1,11 +1,13 @@
 pub mod cli;
 pub mod csv_modifier;
+pub mod file_discovery;
 pub mod google_sheets;
 pub mod item_csv_generator;
 pub mod pipeline;
 pub mod modifiers;
 
 pub use cli::{Cli, Commands, Modifier};
+pub use file_discovery::{resolve_file_paths, DiscoveryStats};
 pub use csv_modifier::{ColumnModifier, CsvModifier, ProcessingStats, RowContext};
 pub use item_csv_generator::{ItemCsvGenerator, ItemGenerationStats};
 pub use modifiers::{

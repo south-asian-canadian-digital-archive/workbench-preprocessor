@@ -95,13 +95,32 @@ impl FieldModelModifier {
     }
 }
 
+/// Models that describe structure, not a file. A row already carrying one of
+/// these was set deliberately, so its attached file's extension must not
+/// rewrite it (a Compound Object with a jpg is still a Compound Object).
+const STRUCTURAL_MODELS: [&str; 6] = [
+    "Collection",
+    "Compound Object",
+    "Paged Content",
+    "Page",
+    "Newspaper",
+    "Publication Issue",
+];
+
 impl ColumnModifier for FieldModelModifier {
     fn modify(&self, value: &str, row: &RowContext) -> String {
+        let current_value = normalize_cell(value);
+        if STRUCTURAL_MODELS
+            .iter()
+            .any(|m| m.eq_ignore_ascii_case(current_value))
+        {
+            return current_value.to_string();
+        }
+
         let extension = row
             .get_first_non_empty(&["file_extension", "file_extention"])
             .unwrap_or("");
         let target_model = self.model_for_extension(extension);
-        let current_value = normalize_cell(value);
 
         if current_value == target_model {
             current_value.to_string()
@@ -153,6 +172,17 @@ mod tests {
 
         let updated = modifier.modify("", &context);
         assert_eq!(updated, "Image");
+    }
+
+    #[test]
+    fn keeps_structural_model_despite_file_extension() {
+        let modifier = FieldModelModifier::from_default_config().unwrap();
+        let headers = vec!["file_extension".to_string(), "field_model".to_string()];
+        let values = vec!["jpg".to_string(), "Compound Object".to_string()];
+        let context = RowContext::new(&headers, &values, 0);
+
+        let updated = modifier.modify("Compound Object", &context);
+        assert_eq!(updated, "Compound Object");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::csv_modifier::{CsvModifier, ProcessingStats};
+use crate::file_discovery::{resolve_file_paths, DiscoveryStats};
 use crate::item_csv_generator::{ItemCsvGenerator, ItemGenerationStats};
 use crate::modifiers::{
     FieldModelModifier, FileExtensionModifier, LanguageModifier, ParentIdModifier,
@@ -18,6 +19,7 @@ pub struct ProcessResult {
     pub processing_stats: ProcessingStats,
     pub items_output_path: Option<String>,
     pub items_stats: Option<ItemGenerationStats>,
+    pub discovery_stats: Option<DiscoveryStats>,
 }
 
 fn determine_modifiers_to_run(
@@ -262,6 +264,7 @@ pub fn process_csv_and_maybe_generate_items(
     full: bool,
     items_output: Option<&str>,
     node: Option<&str>,
+    access_dir: Option<&str>,
 ) -> Result<ProcessResult> {
     if !Path::new(input_path).exists() {
         anyhow::bail!("Input file does not exist: {}", input_path);
@@ -276,6 +279,10 @@ pub fn process_csv_and_maybe_generate_items(
     let modifier = create_modifier(only_run, ignore_run, language_url)?;
     let processing_stats = modifier.process_file(input_path, &processed_output_path)?;
 
+    let discovery_stats = access_dir
+        .map(|dir| resolve_file_paths(&processed_output_path, dir))
+        .transpose()?;
+
     let (items_output_path, items_stats) = if full {
         let items_output_path = determine_items_output_path(
             &processed_output_path,
@@ -293,6 +300,7 @@ pub fn process_csv_and_maybe_generate_items(
         processing_stats,
         items_output_path,
         items_stats,
+        discovery_stats,
     })
 }
 
@@ -307,6 +315,7 @@ pub fn process_google_sheets_and_maybe_generate_items(
     full: bool,
     items_output: Option<&str>,
     node: Option<&str>,
+    access_dir: Option<&str>,
 ) -> Result<ProcessResult> {
     let processed_output_path = determine_processed_output_path_for_sheets(
         explicit_output,
@@ -315,6 +324,10 @@ pub fn process_google_sheets_and_maybe_generate_items(
 
     let modifier = create_modifier(only_run, ignore_run, language_url)?;
     let processing_stats = modifier.process_google_sheets(url, &processed_output_path)?;
+
+    let discovery_stats = access_dir
+        .map(|dir| resolve_file_paths(&processed_output_path, dir))
+        .transpose()?;
 
     let (items_output_path, items_stats) = if full {
         let items_output_path = determine_items_output_path(
@@ -333,6 +346,7 @@ pub fn process_google_sheets_and_maybe_generate_items(
         processing_stats,
         items_output_path,
         items_stats,
+        discovery_stats,
     })
 }
 
