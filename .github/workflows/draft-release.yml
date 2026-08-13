@@ -1,6 +1,6 @@
 # Multi-platform build, SHA256 checksums, and a draft GitHub release.
 # Run manually: Actions → "Draft release (multi-platform)" → Run workflow.
-# Leave "tag" empty to auto-pick the next patch (latest vX.Y.Z tag + 1, or v{Cargo.toml version} if no tags).
+# Leave "tag" empty to use v{version} from Cargo.toml. Fails if that tag already exists.
 
 name: Draft release (multi-platform)
 
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v1.2.0). Leave empty for auto: bump patch from latest v*.*.* git tag, else v + Cargo.toml version."
+        description: "Release tag (e.g. v1.2.0). Leave empty to use v + the version in Cargo.toml."
         required: false
         default: ""
         type: string
@@ -33,38 +33,22 @@ jobs:
         id: tag
         run: |
           set -euo pipefail
-          MANUAL="${{ inputs.tag }}"
-          MANUAL="$(echo -n "$MANUAL" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-          if [ -n "$MANUAL" ]; then
-            echo "release_tag=${MANUAL}" >> "$GITHUB_OUTPUT"
-            echo "Using workflow input tag: ${MANUAL}"
-            exit 0
+          TAG="$(echo -n "${{ inputs.tag }}" | tr -d '[:space:]')"
+          if [ -n "$TAG" ]; then
+            echo "Using workflow input tag: ${TAG}"
+          else
+            VER="$(grep -m1 '^version =' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
+            [ -n "$VER" ] || { echo "Could not read version from Cargo.toml" >&2; exit 1; }
+            TAG="v${VER}"
+            echo "Using Cargo.toml version as tag: ${TAG}"
           fi
 
-          git fetch --tags --force 2>/dev/null || true
-          LATEST="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1 || true)"
-          if [ -n "$LATEST" ]; then
-            V="${LATEST#v}"
-            MAJOR="${V%%.*}"
-            REST="${V#*.}"
-            MINOR="${REST%%.*}"
-            PATCH="${REST#*.}"
-            PATCH="${PATCH%%[^0-9]*}"
-            PATCH="$((PATCH + 1))"
-            NEXT="v${MAJOR}.${MINOR}.${PATCH}"
-            echo "release_tag=${NEXT}" >> "$GITHUB_OUTPUT"
-            echo "Auto tag (bump patch after ${LATEST}): ${NEXT}"
-            exit 0
-          fi
-
-          VER="$(grep -m1 '^version =' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')"
-          if [ -z "$VER" ]; then
-            echo "Could not read version from Cargo.toml and no v*.*.* tags found." >&2
+          # Cargo.toml is the source of truth, so a stale version is a bumped-forgot, not a release.
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists — bump version in Cargo.toml (or pass an explicit tag)." >&2
             exit 1
           fi
-          NEXT="v${VER}"
-          echo "release_tag=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "No semver tags; using Cargo.toml version as tag: ${NEXT}"
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.platform.name }}
