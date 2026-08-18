@@ -44,3 +44,6 @@ items.csv
 *.bak
 *.backup
 NUL
+
+# update.ps1 pulls release binaries from GitHub releases at runtime now
+bin/
