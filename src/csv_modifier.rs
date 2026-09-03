@@ -5,6 +5,7 @@ use encoding_rs::WINDOWS_1252;
 use log::warn;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
+use crate::spreadsheet::csv_reader_from_path;
 
 pub(crate) fn normalize_cell(value: &str) -> &str {
     let trimmed = value.trim();
@@ -185,8 +186,12 @@ impl CsvModifier {
 
     /// Process CSV from a file path
     pub fn process_file(&self, input_path: &str, output_path: &str) -> Result<ProcessingStats> {
-        let mut reader =
-            Reader::from_reader(File::open(input_path).context("Failed to open input file")?);
+        self.process_file_with_sheet(input_path, output_path, None)
+    }
+
+    /// Process CSV, TSV, Excel, or ODS from a file path.
+    pub fn process_file_with_sheet(&self, input_path: &str, output_path: &str, sheet_name: Option<&str>) -> Result<ProcessingStats> {
+        let mut reader = csv_reader_from_path(input_path, sheet_name)?;
         self.process_csv_reader(&mut reader, output_path)
     }
 

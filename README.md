@@ -43,12 +43,15 @@ cargo build --release
 
 Replace `./target/release/organise` with `organise` (or `.\organise.exe`) if you use a release build on your `PATH`.
 
-### Process a local CSV
+### Process a local table
 
 Writes `<input-stem>-modified.csv` next to the input unless you set `--output` / `--output-dir`.
 
 ```bash
 organise data.csv
+organise data.tsv
+organise metadata.xlsx --sheet "Description"
+organise catalogue.ods
 organise data.csv --output out.csv
 organise data.csv --output-dir ./build
 organise data.csv --stats
@@ -88,6 +91,7 @@ organise --full data.csv --output processed.csv --items-output items.csv
 | Flag | Purpose |
 |------|---------|
 | `--url <URL>` | Input is a Google Sheet (instead of a file path) |
+| `--sheet <NAME>` | Worksheet to read from Excel or ODS input; defaults to the first worksheet |
 | `-o, --output <FILE>` | Processed CSV path |
 | `--output-dir <DIR>` | Put default or relative outputs under this directory |
 | `--only-run <MODIFIER>` | Run only these modifiers (repeatable) |

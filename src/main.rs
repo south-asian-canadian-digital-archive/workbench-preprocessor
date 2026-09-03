@@ -15,6 +15,7 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Commands::GenerateItems {
             input,
+            sheet,
             url,
             output,
             node,
@@ -24,6 +25,7 @@ fn main() -> Result<()> {
                 url.as_deref(),
                 output.as_deref(),
                 node.as_deref(),
+                sheet.as_deref(),
             )?;
             print_item_generation_summary(&stats, output.as_deref().unwrap_or("items.csv"));
         }
@@ -41,6 +43,7 @@ fn main() -> Result<()> {
                     cli.items_output.as_deref(),
                     cli.node.as_deref(),
                     cli.access_dir.as_deref(),
+                    cli.sheet.as_deref(),
                 )?;
                 print_processing_summary(&res.processing_stats, &res.processed_output_path, cli.stats);
 

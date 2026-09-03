@@ -90,15 +90,13 @@ fn generate_output_filename(input: &str) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("output");
-    let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("csv");
-
     if let Some(parent) = path.parent() {
         parent
-            .join(format!("{}-modified.{}", stem, extension))
+            .join(format!("{}-modified.csv", stem))
             .to_string_lossy()
             .to_string()
     } else {
-        format!("{}-modified.{}", stem, extension)
+        format!("{}-modified.csv", stem)
     }
 }
 
@@ -211,8 +209,9 @@ pub fn generate_items_from_path(
     input_path: &str,
     output_path: &str,
     node: Option<&str>,
+    sheet_name: Option<&str>,
 ) -> Result<ItemGenerationStats> {
-    ItemCsvGenerator::generate(input_path, output_path, node)
+    ItemCsvGenerator::generate_with_sheet(input_path, output_path, node, sheet_name)
 }
 
 pub fn generate_items_from_url(
@@ -242,11 +241,12 @@ pub fn generate_items_from_source(
     url: Option<&str>,
     output_path: Option<&str>,
     node: Option<&str>,
+    sheet_name: Option<&str>,
 ) -> Result<ItemGenerationStats> {
     let output_path = output_path.unwrap_or("items.csv");
 
     match (input_path, url) {
-        (Some(path), None) => generate_items_from_path(path, output_path, node),
+        (Some(path), None) => generate_items_from_path(path, output_path, node, sheet_name),
         (None, Some(link)) => generate_items_from_url(link, output_path, node),
         (Some(_), Some(_)) => anyhow::bail!("Specify either input_path or url, not both"),
         (None, None) => anyhow::bail!("No input provided. Provide input_path or url."),
@@ -265,6 +265,7 @@ pub fn process_csv_and_maybe_generate_items(
     items_output: Option<&str>,
     node: Option<&str>,
     access_dir: Option<&str>,
+    sheet_name: Option<&str>,
 ) -> Result<ProcessResult> {
     if !Path::new(input_path).exists() {
         anyhow::bail!("Input file does not exist: {}", input_path);
@@ -277,7 +278,7 @@ pub fn process_csv_and_maybe_generate_items(
     )?;
 
     let modifier = create_modifier(only_run, ignore_run, language_url)?;
-    let processing_stats = modifier.process_file(input_path, &processed_output_path)?;
+    let processing_stats = modifier.process_file_with_sheet(input_path, &processed_output_path, sheet_name)?;
 
     let discovery_stats = access_dir
         .map(|dir| resolve_file_paths(&processed_output_path, dir))
@@ -289,7 +290,7 @@ pub fn process_csv_and_maybe_generate_items(
             items_output,
             output_dir,
         )?;
-        let stats = generate_items_from_path(&processed_output_path, &items_output_path, node)?;
+        let stats = generate_items_from_path(&processed_output_path, &items_output_path, node, None)?;
         (Some(items_output_path), Some(stats))
     } else {
         (None, None)
@@ -335,7 +336,7 @@ pub fn process_google_sheets_and_maybe_generate_items(
             items_output,
             output_dir,
         )?;
-        let stats = generate_items_from_path(&processed_output_path, &items_output_path, node)?;
+        let stats = generate_items_from_path(&processed_output_path, &items_output_path, node, None)?;
         (Some(items_output_path), Some(stats))
     } else {
         (None, None)

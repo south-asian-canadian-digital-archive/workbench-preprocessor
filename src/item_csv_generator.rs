@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use csv::{Reader, Writer};
+use csv::Writer;
+use crate::spreadsheet::csv_reader_from_path;
 use std::collections::HashMap;
 use std::fs::File;
 
@@ -112,8 +113,17 @@ impl ItemCsvGenerator {
         output_path: &str,
         node: Option<&str>,
     ) -> Result<ItemGenerationStats> {
-        let file = File::open(input_path).context("Failed to open input file")?;
-        let mut reader = Reader::from_reader(file);
+        Self::generate_with_sheet(input_path, output_path, node, None)
+    }
+
+    /// Generate items from CSV, TSV, Excel, or ODS input.
+    pub fn generate_with_sheet(
+        input_path: &str,
+        output_path: &str,
+        node: Option<&str>,
+        sheet_name: Option<&str>,
+    ) -> Result<ItemGenerationStats> {
+        let mut reader = csv_reader_from_path(input_path, sheet_name)?;
 
         let headers = reader.headers()?.clone();
         let headers: Vec<String> = headers.iter().map(|h| h.to_string()).collect();

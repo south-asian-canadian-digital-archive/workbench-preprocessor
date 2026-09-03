@@ -17,6 +17,10 @@ pub struct Cli {
     )]
     pub input: Option<String>,
 
+    /// Worksheet to read from an Excel or ODS input (defaults to the first sheet)
+    #[arg(long, value_name = "NAME")]
+    pub sheet: Option<String>,
+
     /// Google Sheets URL (edit URL will be converted to CSV export URL)
     #[arg(long, value_name = "URL", conflicts_with = "input")]
     pub url: Option<String>,
@@ -91,6 +95,10 @@ pub enum Commands {
             required_unless_present = "url"
         )]
         input: Option<String>,
+
+        /// Worksheet to read from an Excel or ODS input (defaults to the first sheet)
+        #[arg(long, value_name = "NAME")]
+        sheet: Option<String>,
 
         /// Google Sheets URL to source the data from
         #[arg(

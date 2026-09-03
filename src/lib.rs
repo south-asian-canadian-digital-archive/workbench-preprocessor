@@ -4,6 +4,7 @@ pub mod file_discovery;
 pub mod google_sheets;
 pub mod item_csv_generator;
 pub mod pipeline;
+pub mod spreadsheet;
 pub mod modifiers;
 
 pub use cli::{Cli, Commands, Modifier};
