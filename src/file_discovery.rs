@@ -110,8 +110,8 @@ pub fn resolve_file_paths(csv_path: &str, access_dir: &str) -> Result<DiscoveryS
         rows.push(row);
     }
 
-    let mut writer = Writer::from_path(csv_path)
-        .with_context(|| format!("Failed to rewrite {}", csv_path))?;
+    let mut writer =
+        Writer::from_path(csv_path).with_context(|| format!("Failed to rewrite {}", csv_path))?;
     writer.write_record(headers.iter())?;
     for row in rows {
         writer.write_record(&row)?;
@@ -141,16 +141,16 @@ mod tests {
              2024_19_002,2024_19/2024_19_002.jpg\n",
         )?;
 
-        let stats = resolve_file_paths(
-            csv_path.to_str().unwrap(),
-            access.to_str().unwrap(),
-        )?;
+        let stats = resolve_file_paths(csv_path.to_str().unwrap(), access.to_str().unwrap())?;
 
         assert_eq!(stats.relocated, 1);
         assert_eq!(stats.matched, 0);
         assert_eq!(
             stats.missing,
-            vec![("2024_19_002".to_string(), "2024_19/2024_19_002.jpg".to_string())]
+            vec![(
+                "2024_19_002".to_string(),
+                "2024_19/2024_19_002.jpg".to_string()
+            )]
         );
 
         let rewritten = fs::read_to_string(&csv_path)?;
@@ -166,7 +166,10 @@ mod tests {
         fs::write(access.join("2024_19").join("a.jpg"), b"x")?;
 
         let csv_path = temp.path().join("processed.csv");
-        fs::write(&csv_path, "accessIdentifier,file\n2024_19_001,2024_19/a.jpg\n")?;
+        fs::write(
+            &csv_path,
+            "accessIdentifier,file\n2024_19_001,2024_19/a.jpg\n",
+        )?;
 
         let stats = resolve_file_paths(csv_path.to_str().unwrap(), access.to_str().unwrap())?;
         assert_eq!(stats.matched, 1);

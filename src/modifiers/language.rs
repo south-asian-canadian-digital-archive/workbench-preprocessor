@@ -53,9 +53,12 @@ impl LanguageModifier {
         let response = reqwest::blocking::get(api_url)
             .with_context(|| format!("Failed to connect to language mapping URL {}", api_url))?;
 
-        let response = response
-            .error_for_status()
-            .with_context(|| format!("Language mapping request failed (check URL and server): {}", api_url))?;
+        let response = response.error_for_status().with_context(|| {
+            format!(
+                "Language mapping request failed (check URL and server): {}",
+                api_url
+            )
+        })?;
 
         let terms: Vec<LanguageTermJson> = response
             .json()
@@ -134,11 +137,7 @@ impl ColumnModifier for LanguageModifier {
 
         if let Some(tid) = self.code_to_tid.get(&normalized) {
             self.matched.fetch_add(1, Ordering::Relaxed);
-            debug!(
-                "Language modifier: {:?} → tid {}",
-                value.trim(),
-                tid
-            );
+            debug!("Language modifier: {:?} → tid {}", value.trim(), tid);
             tid.clone()
         } else {
             self.unmatched.fetch_add(1, Ordering::Relaxed);

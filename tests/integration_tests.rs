@@ -28,7 +28,7 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
 2024_19_01_002,image,jpg,,Second Image
 2024_20_02_001,report,docx,,Third Report"#;
 
-    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
+    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
     let output_path = format!("{}_output.csv", input_path);
 
     let modifier = CsvModifier::new()
@@ -74,12 +74,12 @@ fn test_basic_csv_processing() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Google Sheets exports often omit derived columns such as `parent_id`; they must still be created.
 #[test]
-fn test_csv_without_parent_id_column_gets_derived_parent_id() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_csv_without_parent_id_column_gets_derived_parent_id(
+) -> Result<(), Box<dyn std::error::Error>> {
     let csv_content = r#"accessIdentifier,file,file_extension,fileTitle
 2024_19_01_001,document,pdf,First Document"#;
 
-    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
+    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
     let output_path = format!("{}_output.csv", input_path);
 
     let modifier = CsvModifier::new()
@@ -108,7 +108,7 @@ fn test_csv_processing_with_file_extention_alias() -> Result<(), Box<dyn std::er
 2024_19_01_001,document,pdf,,First Document
 2024_19_01_002,image,jpg,,Second Image"#;
 
-    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
+    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
     let output_path = format!("{}_output.csv", input_path);
 
     let modifier = CsvModifier::new()
@@ -145,7 +145,7 @@ fn test_csv_processing_ignores_value_placeholders() -> Result<(), Box<dyn std::e
 #VALUE!,#VALUE!,pdf,#VALUE!,Broken Row
 2024_19_01_001,document,pdf,,Valid Row"#;
 
-    let (input_path, _temp_dir) = create_temp_csv(&csv_content)?;
+    let (input_path, _temp_dir) = create_temp_csv(csv_content)?;
     let output_path = format!("{}_output.csv", input_path);
 
     let modifier = CsvModifier::new()
@@ -346,6 +346,7 @@ fn test_rows_with_empty_title_are_skipped() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn test_text_sanitization_and_description_quotes() -> Result<(), Box<dyn std::error::Error>> {
     let nbsp = '\u{00A0}';
+    let leading_nbsp = format!("2024_19_01_003,asset,pdf,,Valid Title,{}Leading NBSP", nbsp);
     let csv_content = format!(
         "accessIdentifier,file,file_extension,parent_id,title,field_description\n{}
 {}
@@ -355,7 +356,7 @@ fn test_text_sanitization_and_description_quotes() -> Result<(), Box<dyn std::er
 ",
         "2024_19_01_001,asset,pdf,,Peopleâ€™s Archive,Peopleâ€™s collection overview",
         "2024_19_01_002,asset,pdf,,MontrÃ©al Stories,\"Already quoted\"",
-        format!("2024_19_01_003,asset,pdf,,Valid Title,{}Leading NBSP", nbsp),
+        leading_nbsp,
         "2024_19_01_004,asset,pdf,,Semicolon Title,Contains;Semicolon",
         "2024_19_01_005,asset,pdf,,Escaped Title,Already has \\; escape"
     );

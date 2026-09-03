@@ -1,6 +1,6 @@
+use crate::spreadsheet::csv_reader_from_path;
 use anyhow::{Context, Result};
 use csv::Writer;
-use crate::spreadsheet::csv_reader_from_path;
 use std::collections::HashMap;
 use std::fs::File;
 
@@ -136,7 +136,9 @@ impl ItemCsvGenerator {
             .iter()
             .position(|h| h == "fileTitle")
             .context("Column 'fileTitle' not found in CSV. Please ensure the input file contains a fileTitle column.")?;
-        let field_date_idx_opt = headers.iter().position(|h| h == "field_date" || h == "field_edtf_date");
+        let field_date_idx_opt = headers
+            .iter()
+            .position(|h| h == "field_date" || h == "field_edtf_date");
 
         #[derive(Default)]
         struct GroupData {
@@ -165,9 +167,7 @@ impl ItemCsvGenerator {
                 let parent_id_clean = normalize_cell(parent_id_raw);
                 let file_title_clean = normalize_cell(file_title_raw);
 
-                let entry = parent_data
-                    .entry(parent_id_clean.to_string())
-                    .or_default();
+                let entry = parent_data.entry(parent_id_clean.to_string()).or_default();
 
                 if entry.title.is_empty() && !file_title_clean.is_empty() {
                     entry.title = file_title_clean.to_string();
@@ -243,7 +243,9 @@ impl ItemCsvGenerator {
                         let (sum, total): (u32, u32) = group
                             .year_counts
                             .iter()
-                            .fold((0u32, 0u32), |(s, t), (&yy, &cnt)| (s + (yy as u32) * (cnt as u32), t + cnt as u32));
+                            .fold((0u32, 0u32), |(s, t), (&yy, &cnt)| {
+                                (s + (yy as u32) * (cnt as u32), t + cnt as u32)
+                            });
                         let avg = if total > 0 {
                             ((sum as f64) / (total as f64)).round() as u16
                         } else {
@@ -256,7 +258,9 @@ impl ItemCsvGenerator {
                     let (sum, total): (u32, u32) = group
                         .year_counts
                         .iter()
-                        .fold((0u32, 0u32), |(s, t), (&yy, &cnt)| (s + (yy as u32) * (cnt as u32), t + cnt as u32));
+                        .fold((0u32, 0u32), |(s, t), (&yy, &cnt)| {
+                            (s + (yy as u32) * (cnt as u32), t + cnt as u32)
+                        });
                     if total > 0 {
                         (((sum as f64) / (total as f64)).round() as u16).to_string()
                     } else {

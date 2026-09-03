@@ -135,10 +135,7 @@ impl ColumnModifier for FieldModelModifier {
 }
 
 fn normalize_extension(value: &str) -> String {
-    value
-        .trim()
-        .trim_start_matches('.')
-        .to_ascii_lowercase()
+    value.trim().trim_start_matches('.').to_ascii_lowercase()
 }
 
 #[cfg(test)]

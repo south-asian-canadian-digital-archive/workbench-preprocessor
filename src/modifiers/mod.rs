@@ -9,5 +9,5 @@ pub use access_identifier::AccessIdentifierValidator;
 pub use copy_column::CopyFromColumnModifier;
 pub use field_model::FieldModelModifier;
 pub use file_extension::FileExtensionModifier;
-pub use language::{LanguageModifier, resolve_language_mapping_url, DEFAULT_LANGUAGE_CODE_PATH};
+pub use language::{resolve_language_mapping_url, LanguageModifier, DEFAULT_LANGUAGE_CODE_PATH};
 pub use parent_id::ParentIdModifier;

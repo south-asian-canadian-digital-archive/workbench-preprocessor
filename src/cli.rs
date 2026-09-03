@@ -63,12 +63,7 @@ pub struct Cli {
     pub full: bool,
 
     /// Node identifier to use when running --full
-    #[arg(
-        short = 'n',
-        long = "node",
-        value_name = "NODE",
-        requires = "full"
-    )]
+    #[arg(short = 'n', long = "node", value_name = "NODE", requires = "full")]
     pub node: Option<String>,
 }
 

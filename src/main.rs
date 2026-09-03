@@ -2,10 +2,9 @@ use anyhow::Result;
 use clap::Parser;
 use env_logger::Env;
 use organise::{
-    Cli, Commands, CsvModifier, DiscoveryStats, ItemGenerationStats, ProcessingStats,
-    generate_items_from_source,
-    process_csv_and_maybe_generate_items,
-    process_google_sheets_and_maybe_generate_items,
+    generate_items_from_source, process_csv_and_maybe_generate_items,
+    process_google_sheets_and_maybe_generate_items, Cli, Commands, CsvModifier, DiscoveryStats,
+    ItemGenerationStats, ProcessingStats,
 };
 
 fn main() -> Result<()> {
@@ -45,13 +44,19 @@ fn main() -> Result<()> {
                     cli.access_dir.as_deref(),
                     cli.sheet.as_deref(),
                 )?;
-                print_processing_summary(&res.processing_stats, &res.processed_output_path, cli.stats);
+                print_processing_summary(
+                    &res.processing_stats,
+                    &res.processed_output_path,
+                    cli.stats,
+                );
 
                 if let Some(discovery) = res.discovery_stats.as_ref() {
                     print_discovery_summary(discovery);
                 }
 
-                if let (Some(items_stats), Some(items_path)) = (res.items_stats.as_ref(), res.items_output_path.as_ref()) {
+                if let (Some(items_stats), Some(items_path)) =
+                    (res.items_stats.as_ref(), res.items_output_path.as_ref())
+                {
                     print_item_generation_summary(items_stats, items_path);
                 }
             }
@@ -72,13 +77,19 @@ fn main() -> Result<()> {
                     cli.node.as_deref(),
                     cli.access_dir.as_deref(),
                 )?;
-                print_processing_summary(&res.processing_stats, &res.processed_output_path, cli.stats);
+                print_processing_summary(
+                    &res.processing_stats,
+                    &res.processed_output_path,
+                    cli.stats,
+                );
 
                 if let Some(discovery) = res.discovery_stats.as_ref() {
                     print_discovery_summary(discovery);
                 }
 
-                if let (Some(items_stats), Some(items_path)) = (res.items_stats.as_ref(), res.items_output_path.as_ref()) {
+                if let (Some(items_stats), Some(items_path)) =
+                    (res.items_stats.as_ref(), res.items_output_path.as_ref())
+                {
                     print_item_generation_summary(items_stats, items_path);
                 }
             }
@@ -123,7 +134,10 @@ fn print_processing_summary(stats: &ProcessingStats, output: &str, show_stats: b
 fn print_discovery_summary(stats: &DiscoveryStats) {
     println!("\nFile discovery:");
     println!("  - Paths already correct: {}", stats.matched);
-    println!("  - Paths rewritten to the staged file: {}", stats.relocated);
+    println!(
+        "  - Paths rewritten to the staged file: {}",
+        stats.relocated
+    );
     println!("  - Missing files: {}", stats.missing.len());
 
     for (id, path) in stats.missing.iter().take(20) {

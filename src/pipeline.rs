@@ -2,10 +2,10 @@ use crate::csv_modifier::{CsvModifier, ProcessingStats};
 use crate::file_discovery::{resolve_file_paths, DiscoveryStats};
 use crate::item_csv_generator::{ItemCsvGenerator, ItemGenerationStats};
 use crate::modifiers::{
-    FieldModelModifier, FileExtensionModifier, LanguageModifier, ParentIdModifier,
-    resolve_language_mapping_url,
+    resolve_language_mapping_url, FieldModelModifier, FileExtensionModifier, LanguageModifier,
+    ParentIdModifier,
 };
-use crate::{Modifier};
+use crate::Modifier;
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::fs;
@@ -22,10 +22,7 @@ pub struct ProcessResult {
     pub discovery_stats: Option<DiscoveryStats>,
 }
 
-fn determine_modifiers_to_run(
-    only_run: &[Modifier],
-    ignore_run: &[Modifier],
-) -> HashSet<Modifier> {
+fn determine_modifiers_to_run(only_run: &[Modifier], ignore_run: &[Modifier]) -> HashSet<Modifier> {
     let all_modifiers = [
         Modifier::ParentId,
         Modifier::FileExtension,
@@ -271,26 +268,22 @@ pub fn process_csv_and_maybe_generate_items(
         anyhow::bail!("Input file does not exist: {}", input_path);
     }
 
-    let processed_output_path = determine_processed_output_path(
-        input_path,
-        explicit_output,
-        output_dir,
-    )?;
+    let processed_output_path =
+        determine_processed_output_path(input_path, explicit_output, output_dir)?;
 
     let modifier = create_modifier(only_run, ignore_run, language_url)?;
-    let processing_stats = modifier.process_file_with_sheet(input_path, &processed_output_path, sheet_name)?;
+    let processing_stats =
+        modifier.process_file_with_sheet(input_path, &processed_output_path, sheet_name)?;
 
     let discovery_stats = access_dir
         .map(|dir| resolve_file_paths(&processed_output_path, dir))
         .transpose()?;
 
     let (items_output_path, items_stats) = if full {
-        let items_output_path = determine_items_output_path(
-            &processed_output_path,
-            items_output,
-            output_dir,
-        )?;
-        let stats = generate_items_from_path(&processed_output_path, &items_output_path, node, None)?;
+        let items_output_path =
+            determine_items_output_path(&processed_output_path, items_output, output_dir)?;
+        let stats =
+            generate_items_from_path(&processed_output_path, &items_output_path, node, None)?;
         (Some(items_output_path), Some(stats))
     } else {
         (None, None)
@@ -318,10 +311,8 @@ pub fn process_google_sheets_and_maybe_generate_items(
     node: Option<&str>,
     access_dir: Option<&str>,
 ) -> Result<ProcessResult> {
-    let processed_output_path = determine_processed_output_path_for_sheets(
-        explicit_output,
-        output_dir,
-    )?;
+    let processed_output_path =
+        determine_processed_output_path_for_sheets(explicit_output, output_dir)?;
 
     let modifier = create_modifier(only_run, ignore_run, language_url)?;
     let processing_stats = modifier.process_google_sheets(url, &processed_output_path)?;
@@ -331,12 +322,10 @@ pub fn process_google_sheets_and_maybe_generate_items(
         .transpose()?;
 
     let (items_output_path, items_stats) = if full {
-        let items_output_path = determine_items_output_path(
-            &processed_output_path,
-            items_output,
-            output_dir,
-        )?;
-        let stats = generate_items_from_path(&processed_output_path, &items_output_path, node, None)?;
+        let items_output_path =
+            determine_items_output_path(&processed_output_path, items_output, output_dir)?;
+        let stats =
+            generate_items_from_path(&processed_output_path, &items_output_path, node, None)?;
         (Some(items_output_path), Some(stats))
     } else {
         (None, None)
@@ -393,4 +382,3 @@ mod tests {
         Ok(())
     }
 }
-

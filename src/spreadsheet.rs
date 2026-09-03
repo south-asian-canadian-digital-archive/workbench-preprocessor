@@ -46,7 +46,8 @@ fn text_table_to_csv(path: &Path, delimiter: u8, sheet_name: Option<&str>) -> Re
     if sheet_name.is_some() {
         bail!("--sheet is only valid for Excel and ODS workbooks");
     }
-    let input = File::open(path).with_context(|| format!("Failed to open input file: {}", path.display()))?;
+    let input = File::open(path)
+        .with_context(|| format!("Failed to open input file: {}", path.display()))?;
     let mut reader = ReaderBuilder::new()
         .has_headers(false)
         .delimiter(delimiter)
@@ -84,6 +85,11 @@ fn workbook_to_csv(path: &Path, sheet_name: Option<&str>) -> Result<Vec<u8>> {
     Ok(writer.into_inner()?)
 }
 
-pub fn csv_reader_from_path(path: &str, sheet_name: Option<&str>) -> Result<csv::Reader<Cursor<Vec<u8>>>> {
-    Ok(csv::Reader::from_reader(Cursor::new(csv_bytes_from_path(path, sheet_name)?)))
+pub fn csv_reader_from_path(
+    path: &str,
+    sheet_name: Option<&str>,
+) -> Result<csv::Reader<Cursor<Vec<u8>>>> {
+    Ok(csv::Reader::from_reader(Cursor::new(csv_bytes_from_path(
+        path, sheet_name,
+    )?)))
 }
