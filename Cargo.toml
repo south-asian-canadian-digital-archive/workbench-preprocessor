@@ -1,6 +1,6 @@
 [package]
 name = "workbench-preprocessor"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
 include = ["src/modifiers/field_model_mappings.toml"]
 

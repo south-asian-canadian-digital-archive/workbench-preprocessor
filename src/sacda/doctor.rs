@@ -68,9 +68,14 @@ pub fn run(only_site: Option<&str>) -> (Vec<Line>, bool) {
                 continue;
             }
         };
+        let is_default = *name == cfg.sacda.default_site || only_site == Some(name.as_str());
         if let Err(e) = site.reachable() {
-            out.push(line(Some(false), format!("{name}: {e:#}")));
-            all_ok = false;
+            // Only the site you'd ingest into by default decides "ready".
+            out.push(line(
+                if is_default { Some(false) } else { None },
+                format!("{name}: {e:#}{}", if is_default { "" } else { " (not the default site - only matters if you use it)" }),
+            ));
+            all_ok &= !is_default;
             continue;
         }
         let api = site.jsonapi_enabled().unwrap_or(false);
