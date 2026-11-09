@@ -226,19 +226,40 @@ pub fn year_month(value: &str) -> Option<(i32, Option<u32>)> {
     Some((y, m))
 }
 
+/// Earliest and latest year a date can mean: `196X` is 1960-1969, an
+/// interval runs from its start to its end.
+pub fn year_bounds(value: &str) -> Option<(i32, i32)> {
+    let v = value.trim();
+    let mut sides = v.split('/');
+    let first = sides.next()?;
+    let last = sides.next().unwrap_or(first);
+    let bound = |s: &str, hi: bool| -> Option<i32> {
+        let y = strip_qualifier(s.trim()).split('-').next()?;
+        if y.len() != 4 {
+            return None;
+        }
+        let fill = if hi { '9' } else { '0' };
+        y.replace('X', &fill.to_string()).parse().ok()
+    };
+    let lo = bound(first, false).or_else(|| bound(last, false))?;
+    let hi = bound(last, true).or_else(|| bound(first, true))?;
+    Some((lo, hi))
+}
+
 /// A component's date from its items' dates: the shared month or year if they
 /// all agree, otherwise the year span as an EDTF interval.
 pub fn span(dates: &[&str]) -> Option<String> {
-    let parsed: Vec<(i32, Option<u32>)> = dates.iter().filter_map(|d| year_month(d)).collect();
-    if parsed.is_empty() {
+    let bounds: Vec<(i32, i32)> = dates.iter().filter_map(|d| year_bounds(d)).collect();
+    if bounds.is_empty() {
         return None;
     }
-    let min = parsed.iter().map(|p| p.0).min()?;
-    let max = parsed.iter().map(|p| p.0).max()?;
+    let parsed: Vec<(i32, Option<u32>)> = dates.iter().filter_map(|d| year_month(d)).collect();
+    let min = bounds.iter().map(|p| p.0).min()?;
+    let max = bounds.iter().map(|p| p.1).max()?;
     if min != max {
         return Some(format!("{min:04}/{max:04}"));
     }
-    let first_m = parsed[0].1;
+    let first_m = parsed.first().and_then(|p| p.1);
     if first_m.is_some() && parsed.iter().all(|p| p.1 == first_m) {
         return Some(format!("{min:04}-{:02}", first_m?));
     }
@@ -297,5 +318,7 @@ mod tests {
         assert_eq!(span(&["1978-05", "1978-06"]).as_deref(), Some("1978"));
         assert_eq!(span(&["1975", "1982~"]).as_deref(), Some("1975/1982"));
         assert_eq!(span(&[]), None);
+        assert_eq!(span(&["196X", "1965"]).as_deref(), Some("1960/1969"));
+        assert_eq!(span(&["1975/1979", "1980"]).as_deref(), Some("1975/1980"));
     }
 }

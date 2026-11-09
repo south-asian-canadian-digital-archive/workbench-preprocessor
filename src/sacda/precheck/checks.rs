@@ -204,7 +204,7 @@ pub fn structure(s: &mut Session, table: &Table, report: &mut Report) {
                 let mut f = Finding::new(
                     Error,
                     "structure",
-                    format!("collection {id} isn't in the sheet or on the site - add a row for it, or give it a title"),
+                    format!("collection {id} isn't in the sheet or on the site - add a row for it, or give it a title (press t, or --collection-title)"),
                 );
                 if let Some(t) = s.opts.collection_title.clone() {
                     f = Finding::new(Info, "structure", format!("collection {id} will be created as \"{t}\""))

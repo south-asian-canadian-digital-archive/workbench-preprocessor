@@ -389,7 +389,7 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
         steps,
     };
     fs::write(dir.join("bundle.toml"), toml::to_string_pretty(&manifest)?)?;
-    fs::write(dir.join("precheck-report.txt"), report_text(report, applied))?;
+    fs::write(dir.join("precheck-report.txt"), report_text(report, applied, table))?;
     Ok(Written { dir, manifest })
 }
 
@@ -402,7 +402,7 @@ pub fn now_stamp() -> String {
 }
 
 /// Plain-text precheck report, grouped by severity then check.
-pub fn report_text(report: &Report, applied: &[Fix]) -> String {
+pub fn report_text(report: &Report, applied: &[Fix], table: &Table) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "Precheck: {} error(s), {} warning(s), {} note(s)\n",
@@ -434,7 +434,7 @@ pub fn report_text(report: &Report, applied: &[Fix]) -> String {
     if !applied.is_empty() {
         out.push_str(&format!("\nFIXES APPLIED to the bundle ({}; the source sheet is unchanged)\n", applied.len()));
         for f in applied {
-            out.push_str(&format!("  - {}\n", f.describe_at()));
+            out.push_str(&format!("  - {}\n", f.describe_at(table)));
         }
     }
     out

@@ -76,7 +76,7 @@ pub fn main(cli: Cli) -> Result<()> {
     };
     let (fixed, report, applied) = session.settle(&table, &accepted, &[]);
 
-    println!("\n{}", bundle::report_text(&report, &applied));
+    println!("\n{}", bundle::report_text(&report, &applied, &table));
     print_tree(&report);
 
     if report.blocked() {

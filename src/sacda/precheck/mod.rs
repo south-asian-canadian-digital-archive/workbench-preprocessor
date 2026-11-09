@@ -47,10 +47,13 @@ pub enum Fix {
 }
 
 impl Fix {
-    /// `describe`, with the data row it touches (row index -> sheet row).
-    pub fn describe_at(&self) -> String {
+    /// `describe`, with the sheet row it touches.
+    pub fn describe_at(&self, table: &Table) -> String {
         match self {
-            Fix::SetCell { row, .. } => format!("row {}: {}", row + 2, self.describe()),
+            Fix::SetCell { row, .. } => match table.rows.get(*row) {
+                Some(r) => format!("row {}: {}", r.line, self.describe()),
+                None => self.describe(),
+            },
             _ => self.describe(),
         }
     }
@@ -262,6 +265,12 @@ impl Session {
         let mut applied: Vec<Fix> = Vec::new();
         let mut current = table.clone();
         let mut titles = HashMap::new();
+        // Accepted fixes apply even when no finding offers them (a title typed
+        // in for a collection the sheet doesn't describe, say).
+        for fix in accepted.iter().filter(|f| !rejected.contains(f)) {
+            apply(&mut current, &mut titles, fix);
+            applied.push(fix.clone());
+        }
         for _ in 0..4 {
             let report = self.check(&current, &titles);
             let todo: Vec<Fix> = report
