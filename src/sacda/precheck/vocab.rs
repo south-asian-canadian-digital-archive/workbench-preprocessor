@@ -11,7 +11,7 @@ use crate::sacda::config::FieldDef;
 use crate::sacda::source::Table;
 use crate::sacda::suggest;
 use crate::sacda::tree::Kind;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 /// Vocabularies an ingest may never add to.
 const PROTECTED: &[&str] = &[
@@ -121,7 +121,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
     }
 
     let mut new_terms: BTreeMap<String, Vec<NewTerm>> = BTreeMap::new();
-    let mut thesaurus_missing: HashSet<String> = HashSet::new();
+    let mut thesaurus_missing: BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
     for col in table.headers.clone() {
         for (i, row) in table.rows.iter().enumerate() {
@@ -290,7 +290,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
 
                 if !creatable {
                     if is_thesaurus {
-                        thesaurus_missing.insert(p.name.clone());
+                        thesaurus_missing.entry(p.name.clone()).or_default().push(row.line);
                     } else if near.is_none() {
                         report.findings.push(
                             Finding::new(
@@ -353,16 +353,21 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
         }
     }
     if !thesaurus_missing.is_empty() {
-        let mut names: Vec<_> = thesaurus_missing.into_iter().collect();
-        names.sort();
         report.findings.push(Finding::new(
             Error,
             "terms",
             format!(
                 "{} SACDA Thesaurus term(s) aren't on the site yet: {}. Ingest the thesaurus terms first (a separate \
                  thesaurus job), then run this again.",
-                names.len(),
-                names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ")
+                thesaurus_missing.len(),
+                thesaurus_missing
+                    .iter()
+                    .map(|(n, lines)| format!(
+                        "\"{n}\" (row {})",
+                        lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         ));
     }
@@ -402,7 +407,12 @@ fn resolve_language(s: &mut Session, value: &str, line: usize, id: &str, report:
             return Val::Existing { vocab: "language".into(), name: name.to_string() };
         }
     }
+    let names: Vec<String> = s
+        .vocabulary("language")
+        .map(|t| t.iter().map(|t| t.name.clone()).collect())
+        .unwrap_or_default();
     let hint = suggest::closest(value, codes.keys().map(String::as_str))
+        .or_else(|| suggest::closest(value, names.iter().map(String::as_str)))
         .map(|c| format!(" - did you mean '{c}'?"))
         .unwrap_or_default();
     report.findings.push(
