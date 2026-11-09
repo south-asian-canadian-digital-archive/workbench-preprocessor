@@ -8,9 +8,9 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// `uv run --project <workbench> python workbench --config <cfg> [--check]`,
-/// from the workbench folder, streaming its output.
-fn workbench(cfg: &Config, config: &Path, check: bool) -> Result<bool> {
+/// `uv run --project <workbench> python workbench --config <cfg>`, from the
+/// workbench folder, streaming its output.
+fn workbench(cfg: &Config, config: &Path) -> Result<bool> {
     let root = cfg.workbench_root();
     if !root.join("workbench").is_file() {
         bail!("no Islandora Workbench at {} (expected the `workbench` script there)", root.display());
@@ -23,9 +23,6 @@ fn workbench(cfg: &Config, config: &Path, check: bool) -> Result<bool> {
         .arg("workbench")
         .arg("--config")
         .arg(config);
-    if check {
-        cmd.arg("--check");
-    }
     cmd.current_dir(&root)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -84,7 +81,7 @@ pub fn run_bundle(cfg: &Config, dir: &Path, check_only: bool) -> Result<()> {
     if !check_only {
         for step in &terms {
             println!("\n== {} ==", step.name);
-            if !workbench(cfg, &dir.join(&step.config), false)? {
+            if !workbench(cfg, &dir.join(&step.config))? {
                 bail!("{} failed - see the log under g/logs/organise/. Nothing after it ran.", step.name);
             }
         }
@@ -102,7 +99,7 @@ pub fn run_bundle(cfg: &Config, dir: &Path, check_only: bool) -> Result<()> {
             step.name,
             if step.covers.is_empty() { String::new() } else { format!(" (+ {})", step.covers.join(", ")) }
         );
-        if !workbench(cfg, &dir.join(&step.config), false)? {
+        if !workbench(cfg, &dir.join(&step.config))? {
             bail!("{} failed - see the log under g/logs/organise/. Rollback files are in g/rollback/.", step.name);
         }
     }
