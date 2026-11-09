@@ -5,9 +5,11 @@ pub mod google_sheets;
 pub mod item_csv_generator;
 pub mod modifiers;
 pub mod pipeline;
+pub mod sacda;
 pub mod spreadsheet;
+pub mod tui;
 
-pub use cli::{Cli, Commands, Modifier};
+pub use cli::{Cli, Command, Commands, LegacyCli, Modifier};
 pub use csv_modifier::{ColumnModifier, CsvModifier, ProcessingStats, RowContext};
 pub use file_discovery::{resolve_file_paths, DiscoveryStats};
 pub use item_csv_generator::{ItemCsvGenerator, ItemGenerationStats};
