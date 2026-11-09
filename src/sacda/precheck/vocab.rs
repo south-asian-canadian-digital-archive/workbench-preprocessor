@@ -250,7 +250,28 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 let is_thesaurus = col == "field_sacda_thesaurus";
                 let creatable = !rule.never_create && !PROTECTED.contains(&new_vocab.as_str()) && !is_thesaurus;
 
-                if let Some((_, near_name)) = &near {
+                // A new term: find its authority link by heading if it has none yet.
+                // A heading the authority knows is deliberate, so no "did you mean".
+                if creatable && link.is_none() {
+                    if let Some(a) = auth.as_deref() {
+                        match s.authorities.resolve(a, &p.name) {
+                            Ok(Some(res)) => {
+                                if res.label != p.name {
+                                    changed = true;
+                                    p.name = res.label.clone();
+                                }
+                                link = Some(res);
+                            }
+                            Ok(None) => {}
+                            Err(e) => report.findings.push(
+                                Finding::new(Warning, "terms", format!("{col}: {} lookup failed for \"{}\": {e:#}", a.name(), p.name))
+                                    .at(row.line, id.clone()),
+                            ),
+                        }
+                    }
+                }
+
+                if let Some((_, near_name)) = near.as_ref().filter(|_| link.is_none()) {
                     let fixed_cell = replace_value(&cell, raw, &render_name(raw, &p, near_name), &subdelim);
                     report.findings.push(
                         Finding::new(
@@ -283,26 +304,6 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     vals.push(Val::Blocked);
                     rewritten.push(raw.to_string());
                     continue;
-                }
-
-                // A new term: find its authority link by heading if it has none yet.
-                if link.is_none() {
-                    if let Some(a) = auth.as_deref() {
-                        match s.authorities.resolve(a, &p.name) {
-                            Ok(Some(res)) => {
-                                if res.label != p.name {
-                                    changed = true;
-                                    p.name = res.label.clone();
-                                }
-                                link = Some(res);
-                            }
-                            Ok(None) => {}
-                            Err(e) => report.findings.push(
-                                Finding::new(Warning, "terms", format!("{col}: {} lookup failed for \"{}\": {e:#}", a.name(), p.name))
-                                    .at(row.line, id.clone()),
-                            ),
-                        }
-                    }
                 }
 
                 let list = new_terms.entry(new_vocab.clone()).or_default();
