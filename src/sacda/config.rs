@@ -87,6 +87,47 @@ pub struct SacdaToml {
     pub fields: HashMap<String, FieldRule>,
     #[serde(default)]
     pub aliases: HashMap<String, String>,
+    #[serde(default)]
+    pub sheet: SheetCfg,
+}
+
+/// How archivists' sheets differ from Workbench's CSV, beyond renamed headers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SheetCfg {
+    /// Working columns (cataloguer notes etc.) dropped without a warning.
+    #[serde(default)]
+    pub ignore_columns: Vec<String>,
+    /// Extra separators archivists use between values in multi-value term
+    /// cells; turned into the Workbench subdelimiter.
+    #[serde(default = "d_separators")]
+    pub value_separators: Vec<String>,
+    /// Column whose (most common) value titles a collection that's neither in
+    /// the sheet nor on the site.
+    #[serde(default = "d_collection_title")]
+    pub collection_title_column: String,
+    /// Identifier column -> the term column it pairs with value-for-value
+    /// (e.g. lcsh_identifier -> field_subject). Identifiers win when the counts
+    /// line up; otherwise the headings are kept.
+    #[serde(default)]
+    pub identifier_columns: HashMap<String, String>,
+}
+
+impl Default for SheetCfg {
+    fn default() -> Self {
+        Self {
+            ignore_columns: Vec::new(),
+            value_separators: d_separators(),
+            collection_title_column: d_collection_title(),
+            identifier_columns: HashMap::new(),
+        }
+    }
+}
+
+fn d_separators() -> Vec<String> {
+    vec![";".into()]
+}
+fn d_collection_title() -> String {
+    "fondsCollectionTitle".into()
 }
 
 #[derive(Debug, Clone, Deserialize)]

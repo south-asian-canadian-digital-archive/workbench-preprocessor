@@ -8,7 +8,7 @@
 //! someone accepts them. Applying fixes and re-checking is how the final
 //! bundle is produced, so the bundle always matches a clean report.
 
-mod checks;
+pub(crate) mod checks;
 mod vocab;
 
 pub use vocab::{render as vocab_render, NewTerm, Val};
@@ -152,6 +152,7 @@ pub struct Session {
     vocabs: HashMap<String, Result<Vec<Term>, String>>,
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
+    prefetched: std::collections::HashSet<String>,
     pub authorities: Cache,
     site_findings: Option<(Vec<Finding>, bool)>,
 }
@@ -186,6 +187,7 @@ impl Session {
             vocabs: HashMap::new(),
             lang: None,
             nodes: HashMap::new(),
+            prefetched: Default::default(),
             authorities: if cfg!(test) { Cache::in_memory() } else { Cache::open() },
             site_findings: None,
         })
@@ -218,12 +220,42 @@ impl Session {
         }
     }
 
+    /// The node already on the site with this identifier. The first lookup under
+    /// a collection fetches every node under that collection in one go; after
+    /// that, anything not in the cache isn't on the site.
     pub fn find_node(&mut self, identifier: &str) -> Option<NodeRef> {
-        if !self.nodes.contains_key(identifier) {
-            let got = self.site.as_ref().and_then(|s| s.find_node(identifier).ok().flatten());
-            self.nodes.insert(identifier.to_string(), got);
+        if let Some(hit) = self.nodes.get(identifier) {
+            return hit.clone();
         }
-        self.nodes[identifier].clone()
+        let root = identifier
+            .split('_')
+            .take(super::tree::COLLECTION_SEGMENTS)
+            .collect::<Vec<_>>()
+            .join("_");
+        if self.prefetched.insert(root.clone()) {
+            if let Some(site) = &self.site {
+                match site.nodes_under(&root) {
+                    Ok(found) => {
+                        for (id, n) in found {
+                            self.nodes.insert(id, Some(n));
+                        }
+                    }
+                    Err(_) => {
+                        // Fall back to one lookup per identifier.
+                        self.prefetched.remove(&root);
+                        let got = site.find_node(identifier).ok().flatten();
+                        self.nodes.insert(identifier.to_string(), got.clone());
+                        return got;
+                    }
+                }
+            }
+        }
+        if self.prefetched.contains(&root) || self.site.is_none() {
+            return self.nodes.entry(identifier.to_string()).or_insert(None).clone();
+        }
+        let got = self.site.as_ref().and_then(|s| s.find_node(identifier).ok().flatten());
+        self.nodes.insert(identifier.to_string(), got.clone());
+        got
     }
 
     /// Run every check against `table`.

@@ -165,7 +165,7 @@ impl App {
     /// Load a sheet and run the first check (blocking; the caller has drawn a
     /// "checking..." status first).
     fn open(&mut self, input: String) -> Result<()> {
-        let table = source::load(&input, self.start.sheet.as_deref(), &self.cfg.sacda.aliases)?;
+        let table = source::load_for(&input, self.start.sheet.as_deref(), &self.cfg)?;
         let mut session = Session::new(
             self.cfg.clone(),
             &input,
@@ -540,7 +540,7 @@ fn perform(app: &mut App, term: &mut Term, action: Action) -> Result<Flow> {
             busy(app, term, "Re-reading the sheet and the site ...")?;
             let Screen::Review(r) = &mut app.screen else { return Ok(Flow::Continue) };
             let input = r.input_name.clone();
-            let table = source::load(&input, app.start.sheet.as_deref(), &app.cfg.sacda.aliases);
+            let table = source::load_for(&input, app.start.sheet.as_deref(), &app.cfg);
             let session = Session::new(
                 app.cfg.clone(),
                 &input,

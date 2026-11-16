@@ -296,6 +296,20 @@ pub fn build(table: &Table, cfg: &Config, files: &FileIndex) -> Tree {
                 extension,
             }
         });
+        // No `file` cell: the access file is named after the identifier
+        // (2024_19_118_001.tif), as SACDA stages them.
+        let file = file.or_else(|| {
+            let scope = parent_of(&id).unwrap_or_default();
+            let wanted = if ext_cell.is_empty() { id.clone() } else { format!("{id}.{ext_cell}") };
+            let path = files.find(&wanted, &scope)?;
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(wanted);
+            Some(FileRef {
+                row: i,
+                extension: extension_of(&name),
+                wanted: name,
+                path: Some(path),
+            })
+        });
 
         if let Some(item) = tree.nodes.get_mut(&id) {
             if item.kind == Kind::Item {

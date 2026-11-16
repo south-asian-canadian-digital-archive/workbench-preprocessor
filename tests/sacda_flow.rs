@@ -18,7 +18,7 @@ fn check(sheet: &str, title: Option<&str>) -> Option<(Config, Table, Report, Vec
     let cfg = Config::load_from(&g).unwrap();
     let input = g.join("data/examples").join(sheet);
     let input = input.to_str().unwrap().to_string();
-    let table = source::load(&input, None, &cfg.sacda.aliases).unwrap();
+    let table = source::load_for(&input, None, &cfg).unwrap();
     let mut s = Session::new(
         cfg.clone(),
         &input,

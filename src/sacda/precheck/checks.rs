@@ -91,12 +91,17 @@ pub fn site(s: &mut Session, report: &mut Report) {
 }
 
 pub fn columns(s: &mut Session, table: &Table, report: &mut Report) {
-    for (from, to) in &table.renamed {
+    if !table.renamed.is_empty() {
+        let pairs: Vec<String> = table.renamed.iter().map(|(f, t)| format!("{f} -> {t}")).collect();
         report.findings.push(Finding::new(
             Info,
             "columns",
-            format!("column '{from}' read as '{to}' - rename it in the sheet when you can"),
+            format!("{} sheet column(s) mapped to site fields: {}", pairs.len(), pairs.join(", ")),
         ));
+    }
+    for (warn, line, msg) in &table.notes {
+        let f = Finding::new(if *warn { Warning } else { Info }, "columns", msg.clone());
+        report.findings.push(if *line > 0 { f.at(*line, String::new()) } else { f });
     }
     if !ID_COLUMNS.iter().any(|c| table.col(c).is_some()) {
         let fix = table
@@ -123,7 +128,7 @@ pub fn columns(s: &mut Session, table: &Table, report: &mut Report) {
         .chain(comp_fields.keys().map(String::as_str))
         .collect();
     for h in &table.headers {
-        if h.is_empty() || known.contains(&h.as_str()) {
+        if h.is_empty() || known.contains(&h.as_str()) || *h == s.cfg.sacda.sheet.collection_title_column {
             continue;
         }
         let used = table.rows.iter().any(|r| !table.get(r, h).is_empty());
@@ -148,6 +153,35 @@ pub fn columns(s: &mut Session, table: &Table, report: &mut Report) {
             }
         }
     }
+}
+
+/// The most common value of the collection-title column (e.g.
+/// fondsCollectionTitle) on rows under `root`, and a note on any variants.
+fn collection_title_from_sheet(s: &Session, table: &Table, root: &str) -> Option<(String, String)> {
+    let col = &s.cfg.sacda.sheet.collection_title_column;
+    table.col(col)?;
+    let idc = ID_COLUMNS.iter().find(|c| table.col(c).is_some())?;
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    for r in &table.rows {
+        let id = table.get(r, idc);
+        if id == root || id.starts_with(&format!("{root}_")) {
+            let v = table.get(r, col).trim();
+            if !v.is_empty() {
+                *counts.entry(v.to_string()).or_default() += 1;
+            }
+        }
+    }
+    let (best, _) = counts.iter().max_by_key(|(_, n)| **n)?;
+    let others: Vec<&String> = counts.keys().filter(|k| *k != best).collect();
+    let how = if others.is_empty() {
+        format!(" (from {col})")
+    } else {
+        format!(
+            " (most common {col}; the sheet also says {})",
+            others.iter().map(|o| format!("\"{o}\"")).collect::<Vec<_>>().join(", ")
+        )
+    };
+    Some((best.clone(), how))
 }
 
 pub fn structure(s: &mut Session, table: &Table, report: &mut Report) {
@@ -206,8 +240,9 @@ pub fn structure(s: &mut Session, table: &Table, report: &mut Report) {
                     "structure",
                     format!("collection {id} isn't in the sheet or on the site - add a row for it, or give it a title (press t, or --collection-title)"),
                 );
-                if let Some(t) = s.opts.collection_title.clone() {
-                    f = Finding::new(Info, "structure", format!("collection {id} will be created as \"{t}\""))
+                let from_sheet = || collection_title_from_sheet(s, table, &id);
+                if let Some((t, how)) = s.opts.collection_title.clone().map(|t| (t, String::new())).or_else(from_sheet) {
+                    f = Finding::new(Info, "structure", format!("collection {id} will be created as \"{t}\"{how}"))
                         .with_fix(Fix::SetTitle { id: id.clone(), title: t }, true);
                 }
                 report.findings.push(f);
@@ -306,6 +341,31 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
         return;
     }
     let mut out = Vec::new();
+    let bare: Vec<String> = report
+        .tree
+        .of_kind(Kind::Item)
+        .filter(|n| n.files.is_empty())
+        .map(|n| n.id.clone())
+        .collect();
+    if !bare.is_empty() {
+        let shown = bare.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        let more = if bare.len() > 5 { format!(" and {} more", bare.len() - 5) } else { String::new() };
+        let where_ = if s.files.exists {
+            format!("in {}", s.files.root.display())
+        } else {
+            format!("- the access folder {} doesn't exist (stage the files there, or pass --access-dir)", s.files.root.display())
+        };
+        out.push(Finding::new(
+            Warning,
+            "files",
+            format!(
+                "{} item(s) have no file {where_}: {shown}{more}. They'd be created without media (model {}); files are looked up by accessIdentifier (e.g. {}.tif) or the `file` column",
+                bare.len(),
+                s.cfg.sacda.ingest.no_file_model,
+                bare[0]
+            ),
+        ));
+    }
     for node in report.tree.of_kind(Kind::Item) {
         for f in &node.files {
             let line = table.rows[f.row].line;

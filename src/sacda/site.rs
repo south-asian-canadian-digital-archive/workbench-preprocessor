@@ -188,6 +188,44 @@ impl Site {
         Ok(out)
     }
 
+    /// Every archival_component and islandora_object whose identifier starts
+    /// with `prefix`, as (identifier, node). One paginated query per bundle, so
+    /// a 2,000-row sheet costs a few dozen requests instead of 4,000.
+    pub fn nodes_under(&self, prefix: &str) -> Result<Vec<(String, NodeRef)>> {
+        let mut out = Vec::new();
+        for bundle in ["archival_component", "islandora_object"] {
+            let mut url = Some(format!(
+                "{}/jsonapi/node/{bundle}?filter%5Bp%5D%5Bcondition%5D%5Bpath%5D=field_identifier\
+                 &filter%5Bp%5D%5Bcondition%5D%5Boperator%5D=STARTS_WITH\
+                 &filter%5Bp%5D%5Bcondition%5D%5Bvalue%5D={}\
+                 &fields%5Bnode--{bundle}%5D=title,drupal_internal__nid,field_identifier\
+                 &page%5Blimit%5D=50&sort=drupal_internal__nid",
+                self.host(),
+                urlencode(prefix)
+            ));
+            while let Some(u) = url.take() {
+                let doc = self.get_json(&u)?;
+                for item in doc["data"].as_array().into_iter().flatten() {
+                    let a = &item["attributes"];
+                    let (Some(id), Some(nid)) = (a["field_identifier"].as_str(), a["drupal_internal__nid"].as_i64())
+                    else {
+                        continue;
+                    };
+                    out.push((
+                        id.trim().to_string(),
+                        NodeRef {
+                            nid: nid.to_string(),
+                            bundle: bundle.into(),
+                            title: a["title"].as_str().unwrap_or_default().into(),
+                        },
+                    ));
+                }
+                url = doc["links"]["next"]["href"].as_str().map(String::from);
+            }
+        }
+        Ok(out)
+    }
+
     /// An existing archival_component or islandora_object with this identifier.
     pub fn find_node(&self, identifier: &str) -> Result<Option<NodeRef>> {
         for bundle in ["archival_component", "islandora_object"] {

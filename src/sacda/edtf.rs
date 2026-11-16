@@ -128,8 +128,16 @@ pub fn normalize(value: &str) -> Option<String> {
         return None;
     }
     let lower = v.to_ascii_lowercase();
-    if matches!(lower.as_str(), "n.d." | "nd" | "n.d" | "undated" | "unknown" | "no date") {
+    if matches!(lower.as_str(), "n.d." | "nd" | "n.d" | "undated" | "unknown" | "no date")
+        || v.chars().all(|c| matches!(c, '-' | '?' | '/' | ' ' | 'x' | 'X' | '_'))
+    {
+        // Placeholders like `----`, `?`, `xxxx`: no date.
         return Some(String::new());
+    }
+    // `2000-03-` / `2000-` : a part left blank.
+    let trimmed = v.trim_end_matches('-');
+    if trimmed != v && is_valid(trimmed) {
+        return Some(trimmed.to_string());
     }
 
     // c. 1970 / ca. 1970 / circa 1970 -> 1970~
@@ -269,6 +277,14 @@ pub fn span(dates: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholders_and_dangling_hyphens() {
+        assert_eq!(normalize("----").as_deref(), Some(""));
+        assert_eq!(normalize("2000-03-").as_deref(), Some("2000-03"));
+        assert_eq!(normalize("1998-").as_deref(), Some("1998"));
+        assert_eq!(normalize("1998-05-17"), None);
+    }
 
     #[test]
     fn accepts_edtf() {

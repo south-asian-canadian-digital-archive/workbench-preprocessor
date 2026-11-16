@@ -53,7 +53,7 @@ pub fn main(cli: Cli) -> Result<()> {
         confirm_typed(&site_name, &site_cfg.host)?;
     }
 
-    let table = source::load(&input, cli.sheet.as_deref(), &cfg.sacda.aliases)
+    let table = source::load_for(&input, cli.sheet.as_deref(), &cfg)
         .with_context(|| format!("reading {input}"))?;
     println!("Read {} row(s) from {input}", table.rows.len());
     let mut session = Session::new(
