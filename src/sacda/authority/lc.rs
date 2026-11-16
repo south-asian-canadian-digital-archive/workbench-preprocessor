@@ -21,13 +21,12 @@ const MIN_GAP: Duration = Duration::from_millis(300);
 pub struct Lc {
     scheme: &'static str,
     source: &'static str,
-    prefixes: &'static [&'static str],
     client: Client,
     last: Cell<Option<Instant>>,
 }
 
 impl Lc {
-    fn new(scheme: &'static str, source: &'static str, prefixes: &'static [&'static str]) -> Self {
+    fn new(scheme: &'static str, source: &'static str) -> Self {
         let client = Client::builder()
             .user_agent(concat!("sacda-organise/", env!("CARGO_PKG_VERSION")))
             .redirect(Policy::none())
@@ -37,7 +36,6 @@ impl Lc {
         Self {
             scheme,
             source,
-            prefixes,
             client,
             last: Cell::new(None),
         }
@@ -45,11 +43,11 @@ impl Lc {
 
     pub fn subjects() -> Self {
         // sh = topical, sj = children's, gf = genre/form; all live under subjects.
-        Self::new("subjects", "lcsh", &["sh", "sj"])
+        Self::new("subjects", "lcsh")
     }
 
     pub fn names() -> Self {
-        Self::new("names", "naf", &["nb", "no", "nr", "n"])
+        Self::new("names", "naf")
     }
 
     fn pace(&self) {
@@ -62,18 +60,44 @@ impl Lc {
         self.last.set(Some(Instant::now()));
     }
 
-    /// The bare identifier from `sh85005357`, an id.loc.gov URL, or `info:lc/...`.
-    fn identifier_of<'a>(&self, value: &'a str) -> Option<&'a str> {
+    /// The bare identifier from `sh85005357`, an id.loc.gov URL, or `info:lc/...`,
+    /// with the scheme and source it lives in. An LC names ID in a subject
+    /// column (or a subject ID in a name column) is looked up where it lives.
+    fn identifier_of<'a>(&self, value: &'a str) -> Option<(&'a str, &'static str, &'static str)> {
         let v = value.trim().trim_end_matches(".html").trim_end_matches(".json");
-        let marker = format!("/authorities/{}/", self.scheme);
-        let id = match v.find(&marker) {
-            Some(i) => &v[i + marker.len()..],
-            None => v,
-        };
-        let id = id.trim_end_matches('/');
-        let prefix = self.prefixes.iter().find(|p| id.starts_with(*p))?;
-        let digits = &id[prefix.len()..];
-        (digits.len() >= 6 && digits.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+        let id = ["/authorities/subjects/", "/authorities/names/"]
+            .iter()
+            .find_map(|m| v.find(m).map(|i| &v[i + m.len()..]))
+            .unwrap_or(v)
+            .trim_end_matches('/');
+        const SCHEMES: &[(&str, &str, &[&str])] =
+            &[("subjects", "lcsh", &["sh", "sj"]), ("names", "naf", &["nb", "no", "nr", "n"])];
+        // Own scheme first, then the other one.
+        let mut order: Vec<&(&str, &str, &[&str])> = SCHEMES.iter().filter(|s| s.0 == self.scheme).collect();
+        order.extend(SCHEMES.iter().filter(|s| s.0 != self.scheme));
+        for (scheme, source, prefixes) in order {
+            if let Some(prefix) = prefixes.iter().find(|p| id.starts_with(*p)) {
+                let digits = &id[prefix.len()..];
+                if digits.len() >= 6 && digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Some((id, scheme, source));
+                }
+            }
+        }
+        None
+    }
+
+    /// A header as text. X-PrefLabel carries raw UTF-8 for headings like
+    /// `ʻĪd al-Fiṭr`, which `to_str` rejects; LC also sends a
+    /// percent-encoded copy, which is used first.
+    fn header(resp: &reqwest::blocking::Response, name: &str) -> Option<String> {
+        let h = resp.headers();
+        if let Some(enc) = h.get(format!("{name}-encoded")).and_then(|v| v.to_str().ok()) {
+            return Some(percent_decode(enc));
+        }
+        h.get(name).map(|v| match v.to_str() {
+            Ok(t) => percent_decode(t),
+            Err(_) => String::from_utf8_lossy(v.as_bytes()).into_owned(),
+        })
     }
 
     /// HEAD with backoff. id.loc.gov throttles bursts with 403/429 (and has
@@ -97,12 +121,6 @@ impl Lc {
         unreachable!()
     }
 
-    fn header(resp: &reqwest::blocking::Response, name: &str) -> Option<String> {
-        resp.headers()
-            .get(name)
-            .and_then(|h| h.to_str().ok())
-            .map(percent_decode)
-    }
 }
 
 /// X-PrefLabel can arrive percent-encoded for non-ASCII headings.
@@ -127,8 +145,8 @@ impl Authority for Lc {
     }
 
     fn resolve(&self, value: &str) -> Result<Option<Resolved>> {
-        if let Some(id) = self.identifier_of(value) {
-            let url = format!("{BASE}/{}/{id}", self.scheme);
+        if let Some((id, scheme, source)) = self.identifier_of(value) {
+            let url = format!("{BASE}/{scheme}/{id}");
             let resp = self.head(&url)?;
             if resp.status().as_u16() == 404 {
                 return Ok(None);
@@ -136,8 +154,8 @@ impl Authority for Lc {
             let label = Self::header(&resp, "x-preflabel");
             return Ok(label.map(|label| Resolved {
                 label,
-                uri: format!("http://id.loc.gov/authorities/{}/{id}", self.scheme),
-                source: self.source.into(),
+                uri: format!("http://id.loc.gov/authorities/{scheme}/{id}"),
+                source: source.into(),
                 from_identifier: true,
             }));
         }
@@ -193,7 +211,9 @@ mod tests {
         assert!(!s.is_identifier("shoes"));
         let n = Lc::names();
         assert!(n.is_identifier("n79082354"));
-        assert!(!n.is_identifier("sh85005357"));
+        // Cross-scheme IDs are recognised and looked up where they live.
+        assert!(n.is_identifier("sh85005357"));
+        assert_eq!(s.identifier_of("n80049723").map(|x| x.1), Some("names"));
     }
 
     /// Hits id.loc.gov; run with `cargo test -- --ignored`.
@@ -206,6 +226,8 @@ mod tests {
         let by_id = s.resolve("sh85005357").unwrap().unwrap();
         assert_eq!(by_id.label, "Anniversaries");
         assert!(s.resolve("Notarealheadingxyzzy").unwrap().is_none());
+        assert_eq!(s.resolve("sh85064106").unwrap().unwrap().label, "ʻĪd al-Fiṭr");
+        assert!(s.resolve("n80049723").unwrap().unwrap().uri.contains("/names/n80049723"));
         let n = Lc::names().resolve("Simon Fraser University").unwrap().unwrap();
         assert!(n.uri.contains("/names/n"));
     }
