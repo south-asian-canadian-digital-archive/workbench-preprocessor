@@ -3,13 +3,29 @@ use clap::Parser;
 use env_logger::Env;
 use organise::{
     generate_items_from_source, process_csv_and_maybe_generate_items,
-    process_google_sheets_and_maybe_generate_items, Cli, Commands, CsvModifier, DiscoveryStats,
-    ItemGenerationStats, ProcessingStats,
+    process_google_sheets_and_maybe_generate_items, Cli, Command, Commands, CsvModifier,
+    DiscoveryStats, ItemGenerationStats, LegacyCli, ProcessingStats,
 };
 
-fn main() -> Result<()> {
+mod app;
+
+fn main() {
     init_logging();
     let cli = Cli::parse();
+    let result = match cli.command {
+        Some(Command::Legacy { ref args }) => {
+            let argv = std::iter::once("organise legacy".to_string()).chain(args.iter().cloned());
+            legacy_main(LegacyCli::parse_from(argv))
+        }
+        _ => app::main(cli),
+    };
+    if let Err(e) = result {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn legacy_main(cli: LegacyCli) -> Result<()> {
 
     match cli.command {
         Some(Commands::GenerateItems {

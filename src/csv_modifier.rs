@@ -61,7 +61,7 @@ fn fix_common_mojibake(value: &str) -> Option<String> {
     }
 }
 
-fn sanitize_text_in_place(value: &mut String) -> bool {
+pub(crate) fn sanitize_text_in_place(value: &mut String) -> bool {
     let mut changed = false;
 
     if value.contains('\u{00A0}') {

@@ -200,6 +200,11 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout (installer scripts)
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: install
+
       - name: Download build artifacts
         uses: actions/download-artifact@v6
         with:
@@ -223,6 +228,9 @@ jobs:
           fi
           sha256sum "${sums[@]}" | sort -k2 > SHASUMS256.txt
           cat SHASUMS256.txt
+          # The installers fetch whichever release they came with (releases/latest/download/...).
+          cp ../install/install.sh ../install/install.ps1 .
+          chmod +x install.sh
 
       - name: Create draft release
         uses: softprops/action-gh-release@v1
@@ -242,6 +250,23 @@ jobs:
             ```bash
             sha256sum -c SHASUMS256.txt
             ```
+
+            ## Install
+
+            macOS / Linux:
+
+            ```bash
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
+            ```
+
+            Windows (PowerShell):
+
+            ```powershell
+            irm https://github.com/${{ github.repository }}/releases/latest/download/install.ps1 | iex
+            ```
+
+            The installer picks the right build, checks it against SHASUMS256.txt, puts `organise` on PATH,
+            records where the g/ configs folder is, and runs `organise doctor`.
 
             ## Binaries
 
