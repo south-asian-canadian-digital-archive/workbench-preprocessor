@@ -30,8 +30,20 @@ Re-run it to update. From source: `cargo build --release`.
 
 ## What it does
 
-1. **Reads the sheet** - CSV, TSV, Excel, ODS or a Google Sheets link. Cells are trimmed, `#VALUE!` blanked,
-   non-breaking spaces and mojibake repaired, and old headers renamed (`boxIdentifier` -> `field_boxidentifier`...).
+1. **Reads the sheet** - CSV, TSV, Excel, ODS or a Google Sheets link (shared as "anyone with the link"). Cells are
+   trimmed, `#VALUE!` blanked, non-breaking spaces and mojibake repaired. The archivist layout is read as-is:
+   - headers map to fields: the `[aliases]` in `sacda.toml` (`itemTitle` -> `title`, `date` -> `field_edtf_date`,
+     `creator` -> `field_linked_agent`, `lcsh_terms` -> `field_subject`, `subjectPersonal` -> `field_subjects_name`...),
+     and otherwise any header that is a field without `field_`, in camelCase, or the field's label
+     (`extent`, `custodialHistory`, `Subject (Topical)`)
+   - working columns (`notes`, `Cataloguer's Notes`, `SB`, `datetype`, `levelOfDescription`, blank headers) are left
+     out - `[sheet] ignore_columns`
+   - `lcsh_identifier` pairs value-for-value with `lcsh_terms`: the IDs are used (heading and link come from
+     id.loc.gov) when the counts match, the headings otherwise (with a warning)
+   - `;` between values in term cells is read like `|`; CA place keys (`vancouver_bc`) are read as names (`Vancouver`)
+   - `fondsCollectionTitle` titles a collection that's neither in the sheet nor on the site
+   - access files are found by `accessIdentifier` (`2024_19_118_001.tif` anywhere under `access/`), or by a `file`
+     column
 2. **Builds the tree from identifiers.** `2024_19` is a collection, `2024_19_01` a component inside it,
    `2024_19_01_02` a component inside that (any depth), and the deepest identifiers are items.
    - A row ending `_00`/`_000`, or whose identifier other rows extend, describes that container.
