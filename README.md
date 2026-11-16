@@ -28,6 +28,10 @@ The installer picks the right build, verifies it against `SHASUMS256.txt`, puts 
 workbench `g/` folder (it holds `config/sacda.toml`) and remembers it, then runs `organise doctor`.
 Re-run it to update. From source: `cargo build --release`.
 
+The screen works with the mouse too: click a sheet (click it again to check it), a site, a tab, a finding,
+or its `[ ]` box to toggle the fix; the key chips in the footer are buttons; the wheel scrolls. (Mouse capture
+means the terminal's own text selection needs Shift/Option held while dragging.)
+
 ## What it does
 
 1. **Reads the sheet** - CSV, TSV, Excel, ODS or a Google Sheets link (shared as "anyone with the link"). Cells are
