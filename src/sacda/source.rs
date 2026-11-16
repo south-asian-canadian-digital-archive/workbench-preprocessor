@@ -294,11 +294,79 @@ pub fn prepare(t: &mut Table, cfg: &Config) {
     if changed > 0 {
         t.notes.push((false, 0, format!("{changed} multi-value cell(s) re-separated with '{sub}'")));
     }
+
+    // Place keys from the CA lists (`vancouver_bc`, `north_vancouver_bc`) ->
+    // the place name the geo_location vocabulary uses (`Vancouver`).
+    let geo: Vec<usize> = t
+        .headers
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| {
+            ["islandora_object", "archival_component"].iter().any(|b| {
+                cfg.schema.fields(b).get(h.as_str()).is_some_and(|f| f.targets.iter().any(|x| x == "geo_location"))
+            })
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let mut keys: std::collections::BTreeMap<String, String> = Default::default();
+    for r in t.rows.iter_mut() {
+        for &i in &geo {
+            if r.cells[i].is_empty() {
+                continue;
+            }
+            let vals: Vec<String> = r.cells[i]
+                .split(sub.as_str())
+                .map(|v| match place_from_key(v.trim()) {
+                    Some(name) => {
+                        keys.insert(v.trim().to_string(), name.clone());
+                        name
+                    }
+                    None => v.trim().to_string(),
+                })
+                .collect();
+            r.cells[i] = vals.join(&sub);
+        }
+    }
+    if !keys.is_empty() {
+        let shown: Vec<String> = keys.iter().map(|(k, v)| format!("{k} -> {v}")).collect();
+        t.notes.push((false, 0, format!("place keys read as names: {}", shown.join(", "))));
+    }
+}
+
+/// `north_vancouver_bc` -> `North Vancouver`: lower-case words joined by `_`,
+/// ending in a two-letter province/state code.
+fn place_from_key(v: &str) -> Option<String> {
+    let parts: Vec<&str> = v.split('_').collect();
+    if parts.len() < 2 || !v.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+        return None;
+    }
+    let (code, words) = parts.split_last()?;
+    if code.len() != 2 || words.iter().any(|w| w.is_empty()) {
+        return None;
+    }
+    Some(
+        words
+            .iter()
+            .map(|w| {
+                let mut c = w.chars();
+                c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn place_keys() {
+        assert_eq!(place_from_key("vancouver_bc").as_deref(), Some("Vancouver"));
+        assert_eq!(place_from_key("north_vancouver_bc").as_deref(), Some("North Vancouver"));
+        assert_eq!(place_from_key("Vancouver"), None);
+        assert_eq!(place_from_key("delta"), None);
+    }
 
     #[test]
     fn snake_cases_headers() {

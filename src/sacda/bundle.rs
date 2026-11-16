@@ -402,6 +402,29 @@ pub fn now_stamp() -> String {
 }
 
 /// Plain-text precheck report, grouped by severity then check.
+/// "row 2", "rows 2-5, 9 (12 rows)" for the grouped report lines.
+fn rows_label(lines: &[usize]) -> String {
+    let mut ls = lines.to_vec();
+    ls.sort_unstable();
+    ls.dedup();
+    if ls.len() == 1 {
+        return format!("row {}", ls[0]);
+    }
+    let mut spans: Vec<String> = Vec::new();
+    let mut start = ls[0];
+    let mut prev = ls[0];
+    for &l in &ls[1..] {
+        if l != prev + 1 {
+            spans.push(if start == prev { start.to_string() } else { format!("{start}-{prev}") });
+            start = l;
+        }
+        prev = l;
+    }
+    spans.push(if start == prev { start.to_string() } else { format!("{start}-{prev}") });
+    let shown = if spans.len() > 6 { format!("{}, ...", spans[..6].join(", ")) } else { spans.join(", ") };
+    format!("rows {shown} ({} rows)", ls.len())
+}
+
 pub fn report_text(report: &Report, applied: &[Fix], table: &Table) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -410,31 +433,64 @@ pub fn report_text(report: &Report, applied: &[Fix], table: &Table) -> String {
         report.count(Severity::Warning),
         report.count(Severity::Info)
     ));
-    let mut groups: BTreeMap<(Severity, &str), Vec<String>> = BTreeMap::new();
+    // Same message (and same fix) on many rows -> one line listing the rows.
+    type Key<'a> = (Severity, &'a str);
+    let mut groups: BTreeMap<Key, Vec<(String, Vec<usize>, Vec<String>)>> = BTreeMap::new();
     for f in &report.findings {
-        let loc = match (&f.line, &f.id) {
-            (Some(l), Some(id)) => format!("row {l} ({id}): "),
-            (Some(l), None) => format!("row {l}: "),
-            (None, Some(id)) => format!("{id}: "),
-            _ => String::new(),
-        };
         let fix = match (&f.fix, f.auto) {
             (Some(fix), true) => format!("  [fixed: {}]", fix.describe()),
             (Some(fix), false) => format!("  [suggested: {}]", fix.describe()),
             _ => String::new(),
         };
-        groups.entry((f.severity, f.check)).or_default().push(format!("{loc}{}{fix}", f.message));
+        let text = format!("{}{fix}", f.message);
+        let g = groups.entry((f.severity, f.check)).or_default();
+        let slot = match g.iter().position(|(t, _, _)| *t == text) {
+            Some(p) => p,
+            None => {
+                g.push((text, Vec::new(), Vec::new()));
+                g.len() - 1
+            }
+        };
+        if let Some(l) = f.line {
+            g[slot].1.push(l);
+        }
+        if let Some(id) = &f.id {
+            g[slot].2.push(id.clone());
+        }
     }
     for ((sev, check), lines) in groups {
         out.push_str(&format!("\n{} - {check}\n", sev.label().to_uppercase()));
-        for l in lines {
-            out.push_str(&format!("  - {l}\n"));
+        for (text, ls, ids) in lines {
+            let loc = match (ls.len(), ids.first()) {
+                (0, Some(id)) if ids.len() == 1 => format!("{id}: "),
+                (0, _) => String::new(),
+                (1, Some(id)) => format!("row {} ({id}): ", ls[0]),
+                _ => format!("{}: ", rows_label(&ls)),
+            };
+            out.push_str(&format!("  - {loc}{text}\n"));
         }
     }
     if !applied.is_empty() {
         out.push_str(&format!("\nFIXES APPLIED to the bundle ({}; the source sheet is unchanged)\n", applied.len()));
+        let mut by: Vec<(String, Vec<usize>)> = Vec::new();
         for f in applied {
-            out.push_str(&format!("  - {}\n", f.describe_at(table)));
+            let line = match f {
+                Fix::SetCell { row, .. } => table.rows.get(*row).map(|r| r.line),
+                _ => None,
+            };
+            let d = f.describe();
+            match (line, by.iter().position(|(x, _)| *x == d)) {
+                (Some(l), Some(p)) => by[p].1.push(l),
+                (Some(l), None) => by.push((d, vec![l])),
+                (None, _) => by.push((f.describe_at(table), Vec::new())),
+            }
+        }
+        for (d, ls) in by {
+            if ls.is_empty() {
+                out.push_str(&format!("  - {d}\n"));
+            } else {
+                out.push_str(&format!("  - {}: {d}\n", rows_label(&ls)));
+            }
         }
     }
     out
