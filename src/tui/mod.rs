@@ -11,10 +11,14 @@ use crate::sacda::config::Config;
 use crate::sacda::precheck::{Fix, Options, Report, Session};
 use crate::sacda::source::{self, Table};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 use std::io::Stdout;
 use std::path::{Path, PathBuf};
@@ -93,6 +97,23 @@ pub struct App {
     pub confirmed_site: Option<String>,
     start: Start,
     pending_input: Option<String>,
+    /// Clickable areas from the last draw (the view fills it in).
+    pub hits: std::cell::RefCell<Vec<(Rect, Hit)>>,
+}
+
+/// What a mouse click on a drawn area means.
+#[derive(Debug, Clone, Copy)]
+pub enum Hit {
+    /// A key chip in the footer, a tab, etc.: behaves like pressing the key.
+    Key(KeyCode),
+    /// A site on the pick screen.
+    Site(usize),
+    /// The spreadsheet list: rows start at the rect's top, after `offset`.
+    PickList { offset: usize },
+    /// The findings list; the first `check_cols` columns are the [x] box.
+    Findings { offset: usize, check_cols: u16 },
+    /// A scrollable view (tree, terms).
+    Scroll,
 }
 
 const SHEET_EXTS: &[&str] = &["csv", "tsv", "xlsx", "xls", "xlsb", "ods"];
@@ -143,6 +164,7 @@ impl App {
             site_idx,
             files: find_sheets(&cwd),
             pick_sel: 0,
+            hits: Default::default(),
             screen: Screen::Pick,
             input: Input::None,
             status: String::new(),
@@ -252,13 +274,13 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 fn setup() -> Result<Term> {
     enable_raw_mode()?;
     let mut out = std::io::stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     Ok(Terminal::new(CrosstermBackend::new(out))?)
 }
 
 fn teardown(t: &mut Term) {
     let _ = disable_raw_mode();
-    let _ = execute!(t.backend_mut(), LeaveAlternateScreen);
+    let _ = execute!(t.backend_mut(), DisableMouseCapture, LeaveAlternateScreen);
     let _ = t.show_cursor();
 }
 
@@ -269,7 +291,7 @@ pub fn run(start: Start) -> Result<Option<Outcome>> {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         hook(info);
     }));
     let result = event_loop(&mut app, &mut term);
@@ -301,7 +323,14 @@ fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
 
     loop {
         term.draw(|f| view::draw(f, app))?;
-        let Event::Key(key) = event::read()? else { continue };
+        let key = match event::read()? {
+            Event::Key(k) => k,
+            Event::Mouse(m) => match mouse(app, m) {
+                Some(k) => k,
+                None => continue,
+            },
+            _ => continue,
+        };
         if key.kind != KeyEventKind::Press {
             continue;
         }
@@ -313,6 +342,66 @@ fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
             Flow::Quit => return Ok(None),
             Flow::Ingest(dir) => return Ok(Some(Outcome::Ingest { cfg: app.cfg.clone(), dir })),
         }
+    }
+}
+
+fn press(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+/// A mouse event as the key press it stands for (the key handlers then do the
+/// work), or `None` after handling it directly (selecting a row).
+fn mouse(app: &mut App, m: MouseEvent) -> Option<KeyEvent> {
+    match m.kind {
+        MouseEventKind::ScrollUp => return Some(press(KeyCode::Up)),
+        MouseEventKind::ScrollDown => return Some(press(KeyCode::Down)),
+        MouseEventKind::Down(MouseButton::Left) => {}
+        _ => return None,
+    }
+    // While a text box is open, clicks don't move things underneath it.
+    if !matches!(app.input, Input::None) {
+        return None;
+    }
+    let hit = app
+        .hits
+        .borrow()
+        .iter()
+        .rev()
+        .find(|(r, _)| m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height)
+        .copied();
+    let (rect, hit) = hit?;
+    let row = (m.row - rect.y) as usize;
+    match hit {
+        Hit::Key(code) => Some(press(code)),
+        Hit::Site(i) => {
+            if matches!(app.screen, Screen::Pick) && i < app.sites.len() {
+                app.site_idx = i;
+            }
+            None
+        }
+        Hit::PickList { offset } => {
+            let i = offset + row;
+            if i >= app.files.len() {
+                return None;
+            }
+            if app.pick_sel == i {
+                // Clicking the selected sheet opens it, like Enter.
+                return Some(press(KeyCode::Enter));
+            }
+            app.pick_sel = i;
+            None
+        }
+        Hit::Findings { offset, check_cols } => {
+            let Screen::Review(r) = &mut app.screen else { return None };
+            let i = offset + row;
+            if i >= r.entries.len() {
+                return None;
+            }
+            r.sel = i;
+            // The [x] box toggles the fix, like Space.
+            (m.column - rect.x < check_cols).then(|| press(KeyCode::Char(' ')))
+        }
+        Hit::Scroll => None,
     }
 }
 

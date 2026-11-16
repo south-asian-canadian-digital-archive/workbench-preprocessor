@@ -1,6 +1,10 @@
 //! Drawing. Pure functions of `App` - no state changes here.
 
-use super::{App, Entry, Input, Review, Screen, Tab};
+use super::{App, Entry, Hit, Input, Review, Screen, Tab};
+use std::cell::RefCell;
+
+type Hits = RefCell<Vec<(Rect, Hit)>>;
+use crossterm::event::KeyCode;
 use crate::sacda::precheck::Severity;
 use crate::sacda::tree::Kind;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -29,6 +33,7 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 }
 
 pub fn draw(f: &mut Frame, app: &App) {
+    app.hits.borrow_mut().clear();
     let area = f.area();
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -38,7 +43,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     header(f, app, rows[0]);
     match &app.screen {
         Screen::Pick => pick(f, app, rows[1]),
-        Screen::Review(r) => review(f, r, rows[1]),
+        Screen::Review(r) => review(f, r, rows[1], &app.hits),
         Screen::Written { summary, dir } => written(f, summary, dir, rows[1]),
     }
     let status = if app.status.is_empty() {
@@ -47,8 +52,35 @@ pub fn draw(f: &mut Frame, app: &App) {
         Line::from(Span::styled(app.status.clone(), Style::new().fg(Color::Yellow)))
     };
     f.render_widget(Paragraph::new(status), rows[2]);
-    f.render_widget(Paragraph::new(footer(app)), rows[3]);
+    let foot = footer(app);
+    register_chips(app, &foot, rows[3]);
+    f.render_widget(Paragraph::new(foot), rows[3]);
     input_popup(f, app, area);
+}
+
+/// The key a footer chip stands for, so it can be clicked.
+fn chip_key(label: &str) -> Option<KeyCode> {
+    match label.trim() {
+        "Space" => Some(KeyCode::Char(' ')),
+        "Enter" => Some(KeyCode::Enter),
+        "Esc" => Some(KeyCode::Esc),
+        "Tab" => Some(KeyCode::Tab),
+        k if k.chars().count() == 1 => k.chars().next().map(KeyCode::Char),
+        _ => None, // arrows: use the wheel or click the rows instead
+    }
+}
+
+fn register_chips(app: &App, line: &Line, area: Rect) {
+    let mut x = area.x;
+    let mut hits = app.hits.borrow_mut();
+    let spans = &line.spans;
+    for pair in spans.chunks(2) {
+        let w: u16 = pair.iter().map(|s| s.content.chars().count() as u16).sum();
+        if let Some(code) = chip_key(&pair[0].content) {
+            hits.push((Rect::new(x, area.y, w.min(area.right().saturating_sub(x)), 1), Hit::Key(code)));
+        }
+        x = x.saturating_add(w);
+    }
 }
 
 fn header(f: &mut Frame, app: &App, area: Rect) {
@@ -80,6 +112,11 @@ fn header(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(spans)).block(Block::default().borders(Borders::BOTTOM)),
         area,
     );
+}
+
+/// The inside of a bordered block.
+fn inner(r: Rect) -> Rect {
+    Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), r.height.saturating_sub(2))
 }
 
 fn short(s: &str, n: usize) -> String {
@@ -136,6 +173,15 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
         cols[0],
         &mut state,
     );
+    app.hits.borrow_mut().push((inner(cols[0]), Hit::PickList { offset: state.offset() }));
+    // Site lines start two rows into the "Where" box.
+    let wi = inner(cols[1]);
+    for i in 0..app.sites.len() {
+        let y = wi.y + 2 + i as u16;
+        if y < wi.bottom() {
+            app.hits.borrow_mut().push((Rect::new(wi.x, y, wi.width, 1), Hit::Site(i)));
+        }
+    }
     let mut lines = vec![Line::from("Site (←→ to change):"), Line::from("")];
     for (i, s) in app.sites.iter().enumerate() {
         let cfg = &app.cfg.sacda.sites[s];
@@ -155,7 +201,7 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::bordered().title(" Where ")), cols[1]);
 }
 
-fn review(f: &mut Frame, r: &Review, area: Rect) {
+fn review(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(3)])
@@ -170,18 +216,32 @@ fn review(f: &mut Frame, r: &Review, area: Rect) {
         Tab::Tree => 1,
         Tab::Terms => 2,
     };
+    // Tabs draw as " title " separated by "│" - one cell of divider each.
+    let mut x = rows[0].x;
+    for (i, t) in titles.iter().enumerate() {
+        let w = t.chars().count() as u16 + 2;
+        let code = KeyCode::Char(char::from(b'1' + i as u8));
+        hits.borrow_mut().push((Rect::new(x, rows[0].y, w.min(rows[0].right().saturating_sub(x)), 1), Hit::Key(code)));
+        x = x.saturating_add(w + 1);
+    }
     f.render_widget(
         Tabs::new(titles).select(sel).highlight_style(Style::new().fg(ACCENT).bold().underlined()),
         rows[0],
     );
     match r.tab {
-        Tab::Findings => findings(f, r, rows[1]),
-        Tab::Tree => tree(f, r, rows[1]),
-        Tab::Terms => terms(f, r, rows[1]),
+        Tab::Findings => findings(f, r, rows[1], hits),
+        Tab::Tree => {
+            hits.borrow_mut().push((rows[1], Hit::Scroll));
+            tree(f, r, rows[1])
+        }
+        Tab::Terms => {
+            hits.borrow_mut().push((rows[1], Hit::Scroll));
+            terms(f, r, rows[1])
+        }
     }
 }
 
-fn findings(f: &mut Frame, r: &Review, area: Rect) {
+fn findings(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
@@ -225,6 +285,8 @@ fn findings(f: &mut Frame, r: &Review, area: Rect) {
         cols[0],
         &mut state,
     );
+    // "> " highlight column + "[x] " box = the first 6 cells toggle.
+    hits.borrow_mut().push((inner(cols[0]), Hit::Findings { offset: state.offset(), check_cols: 6 }));
 
     // Detail of the selected entry.
     let mut text = Text::default();
