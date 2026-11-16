@@ -163,14 +163,30 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     if a.is_identifier(&p.name) {
                         match s.authorities.resolve(a, &p.name) {
                             Ok(Some(res)) => {
-                                report.findings.push(
-                                    Finding::new(
-                                        Info,
-                                        "terms",
-                                        format!("{col}: {} is {} \"{}\"", p.name, a.name().to_uppercase(), res.label),
-                                    )
-                                    .at(row.line, id.clone()),
-                                );
+                                let typed = table.headings.get(&(row.line, col.clone(), p.name.clone()));
+                                match typed {
+                                    Some(h) if !suggest::headings_agree(h, &res.label) => s.stick(
+                                        Finding::new(
+                                            Warning,
+                                            "terms",
+                                            format!(
+                                                "{col}: {} is \"{}\" at {}, but the sheet's heading says \"{h}\" - check the ID (a typo can land on another real heading)",
+                                                p.name,
+                                                res.label,
+                                                a.name().to_uppercase()
+                                            ),
+                                        )
+                                        .at(row.line, id.clone()),
+                                    ),
+                                    _ => report.findings.push(
+                                        Finding::new(
+                                            Info,
+                                            "terms",
+                                            format!("{col}: {} is {} \"{}\"", p.name, a.name().to_uppercase(), res.label),
+                                        )
+                                        .at(row.line, id.clone()),
+                                    ),
+                                }
                                 p.name = res.label.clone();
                                 link = Some(res);
                                 changed = true;

@@ -20,6 +20,10 @@ pub struct Table {
     pub cells_repaired: usize,
     /// What `prepare` did, for the report: (is_warning, line or 0, message).
     pub notes: Vec<(bool, usize, String)>,
+    /// The heading the sheet typed next to each identifier `prepare` used:
+    /// (line, column, identifier) -> heading. Lets the checks catch an ID
+    /// typo that lands on a different real heading.
+    pub headings: HashMap<(usize, String, String), String>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +112,7 @@ pub fn parse(source: &str, bytes: &[u8], aliases: &HashMap<String, String>) -> R
         renamed,
         cells_repaired: repaired,
         notes: Vec::new(),
+        headings: HashMap::new(),
     })
 }
 
@@ -239,6 +244,9 @@ pub fn prepare(t: &mut Table, cfg: &Config) {
                 continue;
             }
             if terms.is_empty() || ids.len() == terms.len() {
+                for (id, heading) in ids.iter().zip(terms.iter()) {
+                    t.headings.insert((r.line, target.clone(), id.to_string()), heading.to_string());
+                }
                 r.cells[tc] = ids.join(&sub);
                 used += 1;
             } else {
