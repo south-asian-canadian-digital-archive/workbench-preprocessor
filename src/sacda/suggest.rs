@@ -108,7 +108,34 @@ where
     if tied || d > budget(key.chars().count().max(normalize(cand).chars().count())) {
         return None;
     }
-    Some(cand)
+    one_word_typo(input, cand).then_some(cand)
+}
+
+/// For phrases, a suggestion may only fix a typo inside one word (or the
+/// spacing): `Diwali festival` -> `Divali festival` yes, but `men poets` ->
+/// `men models` or `women labour activists` -> `men labour activists` no -
+/// those are different real words, not typos.
+fn one_word_typo(input: &str, cand: &str) -> bool {
+    let words = |s: &str| -> Vec<String> { s.split_whitespace().map(letters).filter(|w| !w.is_empty()).collect() };
+    let (a, b) = (words(input), words(cand));
+    // Single-token candidates (field names, one-word terms) keep the plain
+    // distance rule.
+    if b.len() < 2 {
+        return true;
+    }
+    if a.len() != b.len() {
+        // Only a spacing slip: `Bharatanatyam` / `Bharata natyam`.
+        return distance(&a.concat(), &b.concat()) <= 1;
+    }
+    let diff: Vec<(&String, &String)> = a.iter().zip(b.iter()).filter(|(x, y)| x != y).collect();
+    match diff.as_slice() {
+        [] => true,
+        [(x, y)] => {
+            x.trim_end_matches('s') == y.trim_end_matches('s')
+                || distance(x, y) <= budget(x.chars().count().max(y.chars().count()))
+        }
+        _ => false,
+    }
 }
 
 /// The case-insensitive exact match, if any (used for term names, where
@@ -140,12 +167,28 @@ where
 
 /// Letters and digits only, lower-cased, accents and modifier letters dropped
 /// (`Giddhā` = `Giddha`, `ʻĪd` = `Id`).
-fn letters(s: &str) -> String {
+pub fn letters(s: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     s.nfd()
         .filter(|c| c.is_alphanumeric() && !('\u{02B0}'..='\u{02FF}').contains(c))
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+/// Does an authority's heading plausibly name what the sheet typed? Equal
+/// ignoring case/accents/punctuation, or a typo apart - either against the
+/// whole heading or the heading without its parenthetical qualifier (`Holi` /
+/// `Holī (Hindu festival)`). A subdivision is a different subject:
+/// `Muslims` does not agree with `Muslims--Dietary laws`.
+pub fn headings_agree(typed: &str, authority: &str) -> bool {
+    let a = letters(typed);
+    if a.is_empty() {
+        return true;
+    }
+    let whole = letters(authority);
+    let core = letters(authority.split(" (").next().unwrap_or(authority));
+    let room = budget(a.chars().count());
+    [whole, core].iter().any(|b| *b == a || distance(&a, b) <= room)
 }
 
 #[cfg(test)]
@@ -160,6 +203,17 @@ mod tests {
         assert_eq!(same_letters("Surrey", c), None);
         assert_eq!(same_letters("Giddha (Dance)", ["Giddhā (Dance)"]), Some("Giddhā (Dance)"));
         assert_eq!(closest("Sangat", ["Langar"]), None);
+        assert!(headings_agree("Holi", "Holī (Hindu festival)"));
+        assert!(headings_agree("Diwali", "Dīvālī (Hindu festival)"));
+        assert!(headings_agree("Id al-Adha", "ʻĪd al-Aḍḥā"));
+        assert!(!headings_agree("Festivals", "Muslims"));
+        assert!(!headings_agree("Muslims", "Muslims--Dietary laws"));
+        let th = ["South Asian Canadian men models", "South Asian Canadian men labour activists", "Divali", "Bharata natyam", "Masjids"];
+        assert_eq!(closest("South Asian Canadian men poets", th), None);
+        assert_eq!(closest("South Asian Canadian women labour activists", th), None);
+        assert_eq!(closest("Diwali", th), Some("Divali"));
+        assert_eq!(closest("Bharatanatayam", th), Some("Bharata natyam"));
+        assert_eq!(closest("Masjid", th), Some("Masjids"));
     }
 
     const FIELDS: &[&str] = &[

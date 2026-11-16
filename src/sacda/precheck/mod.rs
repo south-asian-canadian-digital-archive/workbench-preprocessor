@@ -153,6 +153,9 @@ pub struct Session {
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
     prefetched: std::collections::HashSet<String>,
+    /// Findings that must survive the settle passes even after a fix rewrites
+    /// the cell that raised them (ID/heading mismatches).
+    pub(crate) sticky: Vec<Finding>,
     /// Print what's being fetched to stderr (plain mode; never in the TUI).
     pub progress: bool,
     pub authorities: Cache,
@@ -191,6 +194,7 @@ impl Session {
             nodes: HashMap::new(),
             prefetched: Default::default(),
             progress: false,
+            sticky: Vec::new(),
             authorities: if cfg!(test) { Cache::in_memory() } else { Cache::open() },
             site_findings: None,
         })
@@ -281,6 +285,12 @@ impl Session {
         got
     }
 
+    pub(crate) fn stick(&mut self, f: Finding) {
+        if !self.sticky.iter().any(|x| x.message == f.message && x.line == f.line) {
+            self.sticky.push(f);
+        }
+    }
+
     /// Run every check against `table`.
     pub fn check(&mut self, table: &Table, titles: &HashMap<String, String>) -> Report {
         let mut report = Report::default();
@@ -297,6 +307,11 @@ impl Session {
         checks::dates(self, table, &mut report);
         if report.site_ok {
             vocab::check(self, table, &mut report);
+        }
+        for f in &self.sticky {
+            if !report.findings.iter().any(|x| x.message == f.message && x.line == f.line) {
+                report.findings.push(f.clone());
+            }
         }
         report.findings.sort_by(|a, b| {
             a.severity
