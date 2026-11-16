@@ -435,7 +435,8 @@ pub fn report_text(report: &Report, applied: &[Fix], table: &Table) -> String {
     ));
     // Same message (and same fix) on many rows -> one line listing the rows.
     type Key<'a> = (Severity, &'a str);
-    let mut groups: BTreeMap<Key, Vec<(String, Vec<usize>, Vec<String>)>> = BTreeMap::new();
+    type Lines = Vec<(String, Vec<usize>, Vec<String>)>; // (text, rows, ids)
+    let mut groups: BTreeMap<Key, Lines> = BTreeMap::new();
     for f in &report.findings {
         let fix = match (&f.fix, f.auto) {
             (Some(fix), true) => format!("  [fixed: {}]", fix.describe()),
