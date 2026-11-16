@@ -177,7 +177,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                             }
                             Ok(None) => {
                                 report.findings.push(
-                                    Finding::new(Error, "terms", format!("{col}: {} isn't a {} identifier", p.name, a.name().to_uppercase()))
+                                    Finding::new(Error, "terms", format!("{col}: id.loc.gov has no heading for {} - a typo, or a withdrawn ID? Use the current ID or the heading", p.name))
                                         .at(row.line, id.clone()),
                                 );
                                 vals.push(Val::Blocked);
