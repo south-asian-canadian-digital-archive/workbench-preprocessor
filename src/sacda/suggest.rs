@@ -188,7 +188,16 @@ pub fn headings_agree(typed: &str, authority: &str) -> bool {
     let whole = letters(authority);
     let core = letters(authority.split(" (").next().unwrap_or(authority));
     let room = budget(a.chars().count());
-    [whole, core].iter().any(|b| *b == a || distance(&a, b) <= room)
+    if [&whole, &core].iter().any(|b| **b == a || distance(&a, b) <= room) {
+        return true;
+    }
+    // Inverted headings: `Group portraits` = `Portraits, Group`.
+    let bag = |s: &str| {
+        let mut w: Vec<String> = s.split(|c: char| c.is_whitespace() || c == ',').map(letters).filter(|w| !w.is_empty()).collect();
+        w.sort();
+        w
+    };
+    bag(typed) == bag(authority)
 }
 
 #[cfg(test)]
@@ -208,6 +217,7 @@ mod tests {
         assert!(headings_agree("Id al-Adha", "ʻĪd al-Aḍḥā"));
         assert!(!headings_agree("Festivals", "Muslims"));
         assert!(!headings_agree("Muslims", "Muslims--Dietary laws"));
+        assert!(headings_agree("Group portraits", "Portraits, Group"));
         let th = ["South Asian Canadian men models", "South Asian Canadian men labour activists", "Divali", "Bharata natyam", "Masjids"];
         assert_eq!(closest("South Asian Canadian men poets", th), None);
         assert_eq!(closest("South Asian Canadian women labour activists", th), None);
