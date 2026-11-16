@@ -212,7 +212,9 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                             continue;
                         }
                     };
-                    if let Some(name) = suggest::exact_ci(&p.name, terms.iter().map(|t| t.name.as_str())) {
+                    if let Some(name) = suggest::exact_ci(&p.name, terms.iter().map(|t| t.name.as_str()))
+                        .or_else(|| suggest::same_letters(&p.name, terms.iter().map(|t| t.name.as_str())))
+                    {
                         found = Some((vid.clone(), name.to_string()));
                         break;
                     }

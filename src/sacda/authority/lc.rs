@@ -16,7 +16,7 @@ use std::cell::Cell;
 
 const BASE: &str = "https://id.loc.gov/authorities";
 /// Be polite: id.loc.gov is a shared public service.
-const MIN_GAP: Duration = Duration::from_millis(150);
+const MIN_GAP: Duration = Duration::from_millis(300);
 
 pub struct Lc {
     scheme: &'static str,
@@ -76,6 +76,27 @@ impl Lc {
         (digits.len() >= 6 && digits.bytes().all(|b| b.is_ascii_digit())).then_some(id)
     }
 
+    /// HEAD with backoff. id.loc.gov throttles bursts with 403/429 (and has
+    /// the odd 5xx); those must never read as "no such heading", so after the
+    /// retries they're an error - and errors aren't cached.
+    fn head(&self, url: &str) -> Result<reqwest::blocking::Response> {
+        let mut wait = Duration::from_secs(2);
+        for attempt in 1..=6 {
+            self.pace();
+            let resp = self.client.head(url).send().with_context(|| format!("HEAD {url}"))?;
+            let code = resp.status().as_u16();
+            if !(code == 403 || code == 429 || code >= 500) {
+                return Ok(resp);
+            }
+            if attempt == 6 {
+                anyhow::bail!("id.loc.gov answered {code} for {url} (throttled?) - try again in a few minutes");
+            }
+            sleep(wait);
+            wait = (wait * 2).min(Duration::from_secs(30));
+        }
+        unreachable!()
+    }
+
     fn header(resp: &reqwest::blocking::Response, name: &str) -> Option<String> {
         resp.headers()
             .get(name)
@@ -107,9 +128,8 @@ impl Authority for Lc {
 
     fn resolve(&self, value: &str) -> Result<Option<Resolved>> {
         if let Some(id) = self.identifier_of(value) {
-            self.pace();
             let url = format!("{BASE}/{}/{id}", self.scheme);
-            let resp = self.client.head(&url).send().with_context(|| format!("HEAD {url}"))?;
+            let resp = self.head(&url)?;
             if resp.status().as_u16() == 404 {
                 return Ok(None);
             }
@@ -126,15 +146,17 @@ impl Authority for Lc {
         if heading.is_empty() {
             return Ok(None);
         }
-        self.pace();
         let url = format!(
             "{BASE}/{}/label/{}",
             self.scheme,
             urlencoding_path(heading)
         );
-        let resp = self.client.head(&url).send().with_context(|| format!("HEAD {url}"))?;
-        if !resp.status().is_redirection() && !resp.status().is_success() {
+        let resp = self.head(&url)?;
+        if resp.status().as_u16() == 404 {
             return Ok(None);
+        }
+        if !resp.status().is_redirection() && !resp.status().is_success() {
+            anyhow::bail!("id.loc.gov answered {} for {url}", resp.status());
         }
         let uri = match Self::header(&resp, "x-uri") {
             Some(u) => u,

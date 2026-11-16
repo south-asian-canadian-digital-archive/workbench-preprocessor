@@ -153,6 +153,8 @@ pub struct Session {
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
     prefetched: std::collections::HashSet<String>,
+    /// Print what's being fetched to stderr (plain mode; never in the TUI).
+    pub progress: bool,
     pub authorities: Cache,
     site_findings: Option<(Vec<Finding>, bool)>,
 }
@@ -188,6 +190,7 @@ impl Session {
             lang: None,
             nodes: HashMap::new(),
             prefetched: Default::default(),
+            progress: false,
             authorities: if cfg!(test) { Cache::in_memory() } else { Cache::open() },
             site_findings: None,
         })
@@ -195,10 +198,20 @@ impl Session {
 
     pub fn vocabulary(&mut self, vid: &str) -> Result<&[Term], String> {
         if !self.vocabs.contains_key(vid) {
+            if self.progress && self.site.is_some() {
+                eprint!("  fetching vocabulary {vid}... ");
+            }
+            let t0 = std::time::Instant::now();
             let got = match &self.site {
                 Some(site) => site.vocabulary(vid).map_err(|e| e.to_string()),
                 None => Err("offline".to_string()),
             };
+            if self.progress && self.site.is_some() {
+                match &got {
+                    Ok(v) => eprintln!("{} terms ({:.0}s)", v.len(), t0.elapsed().as_secs_f32()),
+                    Err(e) => eprintln!("failed: {e}"),
+                }
+            }
             self.vocabs.insert(vid.to_string(), got);
         }
         match &self.vocabs[vid] {
@@ -234,7 +247,17 @@ impl Session {
             .join("_");
         if self.prefetched.insert(root.clone()) {
             if let Some(site) = &self.site {
-                match site.nodes_under(&root) {
+                if self.progress {
+                    eprint!("  looking up what's already on the site under {root}... ");
+                }
+                let got = site.nodes_under(&root);
+                if self.progress {
+                    match &got {
+                        Ok(v) => eprintln!("{} node(s)", v.len()),
+                        Err(e) => eprintln!("failed ({e}) - checking one by one"),
+                    }
+                }
+                match got {
                     Ok(found) => {
                         for (id, n) in found {
                             self.nodes.insert(id, Some(n));
@@ -282,6 +305,9 @@ impl Session {
                 .then(a.line.cmp(&b.line))
         });
         self.authorities.save();
+        if self.progress && self.authorities.asked() > 0 {
+            eprintln!();
+        }
         report
     }
 

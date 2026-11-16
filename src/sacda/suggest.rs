@@ -121,9 +121,38 @@ where
     candidates.into_iter().find(|c| c.to_lowercase() == lower)
 }
 
+/// The one candidate that's the same once case, spaces and punctuation are
+/// ignored (`newwestminster` = `New Westminster`, `Isma'ilism` = `Ismailism`,
+/// curly vs straight apostrophes). None if there's no such candidate or more
+/// than one.
+pub fn same_letters<'a, I>(input: &str, candidates: I) -> Option<&'a str>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let key = letters(input);
+    if key.is_empty() {
+        return None;
+    }
+    let mut hits = candidates.into_iter().filter(|c| letters(c) == key);
+    let first = hits.next()?;
+    hits.all(|h| h == first).then_some(first)
+}
+
+fn letters(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_letters_ignores_spacing_and_punctuation() {
+        let c = ["New Westminster", "Ismailism or Ismaili Muslims", "Vancouver"];
+        assert_eq!(same_letters("Newwestminster", c), Some("New Westminster"));
+        assert_eq!(same_letters("Isma'ilism or Ismaili Muslims", c), Some("Ismailism or Ismaili Muslims"));
+        assert_eq!(same_letters("Surrey", c), None);
+    }
 
     const FIELDS: &[&str] = &[
         "field_subject",

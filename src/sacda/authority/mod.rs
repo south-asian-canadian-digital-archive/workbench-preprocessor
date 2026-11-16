@@ -57,11 +57,16 @@ pub struct Cache {
     path: Option<PathBuf>,
     #[serde(skip)]
     dirty: bool,
+    /// Count network lookups on stderr (plain mode).
+    #[serde(skip)]
+    pub progress: bool,
+    #[serde(skip)]
+    asked: usize,
 }
 
 impl Cache {
     pub fn open() -> Self {
-        let path = cache_dir().map(|d| d.join("authority-cache.json"));
+        let path = cache_dir().map(|d| d.join("authority-cache-v2.json"));
         let mut cache: Cache = path
             .as_ref()
             .and_then(|p| fs::read_to_string(p).ok())
@@ -76,10 +81,18 @@ impl Cache {
     }
 
     /// Resolve through the cache. Network errors aren't cached.
+    pub fn asked(&self) -> usize {
+        self.asked
+    }
+
     pub fn resolve(&mut self, auth: &dyn Authority, value: &str) -> Result<Option<Resolved>> {
         let key = format!("{}\u{1f}{}", auth.name(), value.trim().to_lowercase());
         if let Some(hit) = self.entries.get(&key) {
             return Ok(hit.clone());
+        }
+        if self.progress {
+            self.asked += 1;
+            eprint!("\r  authority lookups at id.loc.gov: {}   ", self.asked);
         }
         let got = auth.resolve(value)?;
         self.entries.insert(key, got.clone());

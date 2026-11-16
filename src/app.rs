@@ -66,6 +66,8 @@ pub fn main(cli: Cli) -> Result<()> {
             offline: cli.offline,
         },
     )?;
+    session.progress = true;
+    session.authorities.progress = true;
     println!("Checking against {} ({}); files from {}", site_name, site_cfg.host, session.files.root.display());
 
     let (_, first, _) = session.settle(&table, &[], &[]);
