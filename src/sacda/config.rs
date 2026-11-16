@@ -37,6 +37,14 @@ pub struct IngestCfg {
     pub multi_file_model: String,
     #[serde(default = "d_nofile")]
     pub no_file_model: String,
+    /// Largest file the site accepts in one upload, in MB (Cloudflare's free
+    /// plan stops request bodies at 100 MB with a 413). 0 = no limit.
+    #[serde(default = "d_max_upload")]
+    pub max_upload_mb: u64,
+}
+
+fn d_max_upload() -> u64 {
+    100
 }
 
 fn d_access() -> String {
@@ -63,6 +71,7 @@ impl Default for IngestCfg {
             intermediate_level: d_intermediate(),
             multi_file_model: d_multi(),
             no_file_model: d_nofile(),
+            max_upload_mb: d_max_upload(),
         }
     }
 }

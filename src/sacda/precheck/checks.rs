@@ -376,6 +376,25 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
                 );
                 continue;
             }
+            let limit = s.cfg.sacda.ingest.max_upload_mb;
+            if limit > 0 {
+                if let Some(size) = f.path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()) {
+                    if size > limit * 1_000_000 {
+                        out.push(
+                            Finding::new(
+                                Error,
+                                "files",
+                                format!(
+                                    "'{}' is {} MB - the site only takes uploads up to {limit} MB (Cloudflare answers 413). Upload a smaller access copy (e.g. a compressed TIFF or a JPEG 2000)",
+                                    f.wanted,
+                                    size / 1_000_000
+                                ),
+                            )
+                            .at(line, node.id.clone()),
+                        );
+                    }
+                }
+            }
             if f.extension.is_empty() {
                 out.push(
                     Finding::new(Error, "files", format!("file '{}' has no extension and no file_extension", f.wanted))

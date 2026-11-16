@@ -9,28 +9,40 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// `uv run --project <workbench> python workbench --config <cfg>`, from the
-/// workbench folder, streaming its output.
-fn workbench(cfg: &Config, config: &Path) -> Result<bool> {
+/// workbench folder, streaming its output. Workbench exits 0 even when a node
+/// or media fails, so its `ERROR` lines are counted and returned too.
+fn workbench(cfg: &Config, config: &Path) -> Result<(bool, Vec<String>)> {
+    use std::io::{BufRead, BufReader};
     let root = cfg.workbench_root();
     if !root.join("workbench").is_file() {
         bail!("no Islandora Workbench at {} (expected the `workbench` script there)", root.display());
     }
-    let mut cmd = Command::new("uv");
-    cmd.arg("run")
+    let mut child = Command::new("uv")
+        .arg("run")
         .arg("--project")
         .arg(&root)
         .arg("python")
         .arg("workbench")
         .arg("--config")
-        .arg(config);
-    cmd.current_dir(&root)
+        .arg(config)
+        .current_dir(&root)
         .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    let status = cmd
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
         .context("couldn't start `uv` - is it installed? (run `organise doctor`)")?;
-    Ok(status.success())
+    let mut errors = Vec::new();
+    if let Some(out) = child.stdout.take() {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            println!("{line}");
+            let t = line.trim_start().trim_start_matches("- ");
+            if t.starts_with("ERROR") || t.starts_with("Error:") || t.contains("Traceback") {
+                errors.push(line);
+            }
+        }
+    }
+    let status = child.wait()?;
+    Ok((status.success(), errors))
 }
 
 /// Workbench `--check` exits 0 even when it lists problems, so its output is
@@ -81,8 +93,9 @@ pub fn run_bundle(cfg: &Config, dir: &Path, check_only: bool) -> Result<()> {
     if !check_only {
         for step in &terms {
             println!("\n== {} ==", step.name);
-            if !workbench(cfg, &dir.join(&step.config))? {
-                bail!("{} failed - see the log under g/logs/organise/. Nothing after it ran.", step.name);
+            let (ok, errors) = workbench(cfg, &dir.join(&step.config))?;
+            if !ok || !errors.is_empty() {
+                bail!("{} failed ({} error line(s)) - see the log under g/logs/organise/. Nothing after it ran.", step.name, errors.len());
             }
         }
     }
@@ -93,15 +106,25 @@ pub fn run_bundle(cfg: &Config, dir: &Path, check_only: bool) -> Result<()> {
         println!("\nAll checks passed. Run without --check-only to ingest.");
         return Ok(());
     }
+    let mut problems: Vec<String> = Vec::new();
     for step in &rest {
         println!(
             "\n== {}{} ==",
             step.name,
             if step.covers.is_empty() { String::new() } else { format!(" (+ {})", step.covers.join(", ")) }
         );
-        if !workbench(cfg, &dir.join(&step.config))? {
+        let (ok, errors) = workbench(cfg, &dir.join(&step.config))?;
+        if !ok {
             bail!("{} failed - see the log under g/logs/organise/. Rollback files are in g/rollback/.", step.name);
         }
+        problems.extend(errors.into_iter().map(|e| format!("{}: {e}", step.name)));
+    }
+    if !problems.is_empty() {
+        println!("\nIngest finished WITH {} ERROR(S) - those nodes/media need fixing (log: g/logs/organise/):", problems.len());
+        for p in &problems {
+            println!("  {p}");
+        }
+        bail!("{} Workbench error(s) during the ingest", problems.len());
     }
     println!("\nIngest finished. Derivatives (thumbnails, OCR) keep generating on the site for a while.");
     Ok(())
