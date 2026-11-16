@@ -19,6 +19,10 @@ pub struct SiteCfg {
     pub thesaurus_vocabulary: String,
     #[serde(default)]
     pub confirm: bool,
+    /// Largest upload this site's front end takes, in MB (overrides
+    /// `[ingest] max_upload_mb`). DEV's Cloudflare tunnel stops at 100.
+    #[serde(default)]
+    pub max_upload_mb: Option<u64>,
 }
 
 fn default_thesaurus() -> String {
@@ -37,14 +41,13 @@ pub struct IngestCfg {
     pub multi_file_model: String,
     #[serde(default = "d_nofile")]
     pub no_file_model: String,
-    /// Largest file the site accepts in one upload, in MB (Cloudflare's free
-    /// plan stops request bodies at 100 MB with a 413). 0 = no limit.
+    /// Upload limit in MB for sites that don't set their own; 0 = no limit.
     #[serde(default = "d_max_upload")]
     pub max_upload_mb: u64,
 }
 
 fn d_max_upload() -> u64 {
-    100
+    0
 }
 
 fn d_access() -> String {

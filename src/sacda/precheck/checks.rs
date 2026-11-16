@@ -376,7 +376,13 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
                 );
                 continue;
             }
-            let limit = s.cfg.sacda.ingest.max_upload_mb;
+            let limit = s
+                .cfg
+                .sacda
+                .sites
+                .get(&s.site_name)
+                .and_then(|x| x.max_upload_mb)
+                .unwrap_or(s.cfg.sacda.ingest.max_upload_mb);
             if limit > 0 {
                 if let Some(size) = f.path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()) {
                     if size > limit * 1_000_000 {
@@ -385,9 +391,10 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
                                 Error,
                                 "files",
                                 format!(
-                                    "'{}' is {} MB - the site only takes uploads up to {limit} MB (Cloudflare answers 413). Upload a smaller access copy (e.g. a compressed TIFF or a JPEG 2000)",
+                                    "'{}' is {} MB - {} only takes uploads up to {limit} MB (it answers 413). Upload a smaller access copy (e.g. a compressed TIFF or a JPEG 2000)",
                                     f.wanted,
-                                    size / 1_000_000
+                                    size / 1_000_000,
+                                    s.site_name
                                 ),
                             )
                             .at(line, node.id.clone()),
