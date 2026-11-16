@@ -56,8 +56,8 @@ pub fn distance(a: &str, b: &str) -> usize {
 fn budget(len: usize) -> usize {
     match len {
         0..=3 => 0,
-        4..=5 => 1,
-        6..=10 => 2,
+        4..=7 => 1,
+        8..=12 => 2,
         _ => 3,
     }
 }
@@ -138,8 +138,14 @@ where
     hits.all(|h| h == first).then_some(first)
 }
 
+/// Letters and digits only, lower-cased, accents and modifier letters dropped
+/// (`Giddhā` = `Giddha`, `ʻĪd` = `Id`).
 fn letters(s: &str) -> String {
-    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    use unicode_normalization::UnicodeNormalization;
+    s.nfd()
+        .filter(|c| c.is_alphanumeric() && !('\u{02B0}'..='\u{02FF}').contains(c))
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]
@@ -152,6 +158,8 @@ mod tests {
         assert_eq!(same_letters("Newwestminster", c), Some("New Westminster"));
         assert_eq!(same_letters("Isma'ilism or Ismaili Muslims", c), Some("Ismailism or Ismaili Muslims"));
         assert_eq!(same_letters("Surrey", c), None);
+        assert_eq!(same_letters("Giddha (Dance)", ["Giddhā (Dance)"]), Some("Giddhā (Dance)"));
+        assert_eq!(closest("Sangat", ["Langar"]), None);
     }
 
     const FIELDS: &[&str] = &[

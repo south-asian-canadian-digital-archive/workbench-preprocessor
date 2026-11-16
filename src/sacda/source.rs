@@ -333,20 +333,24 @@ pub fn prepare(t: &mut Table, cfg: &Config) {
     }
 }
 
-/// `north_vancouver_bc` -> `North Vancouver`: lower-case words joined by `_`,
+/// `north_vancouver_bc` -> `North Vancouver`, `New Westminster_bc` ->
+/// `New Westminster`: words joined by `_` (or a name with `_xx` stuck on),
 /// ending in a two-letter province/state code.
 fn place_from_key(v: &str) -> Option<String> {
-    let parts: Vec<&str> = v.split('_').collect();
-    if parts.len() < 2 || !v.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+    let (words, code) = v.rsplit_once('_')?;
+    if code.len() != 2 || !code.chars().all(|c| c.is_ascii_alphabetic()) || words.trim().is_empty() {
         return None;
     }
-    let (code, words) = parts.split_last()?;
-    if code.len() != 2 || words.iter().any(|w| w.is_empty()) {
+    if words.chars().any(|c| c.is_uppercase()) {
+        // Already a name, just with the code attached.
+        return Some(words.replace('_', " ").trim().to_string());
+    }
+    if !words.chars().all(|c| c.is_ascii_lowercase() || c == '_') || words.split('_').any(str::is_empty) {
         return None;
     }
     Some(
         words
-            .iter()
+            .split('_')
             .map(|w| {
                 let mut c = w.chars();
                 c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
@@ -366,6 +370,7 @@ mod tests {
         assert_eq!(place_from_key("north_vancouver_bc").as_deref(), Some("North Vancouver"));
         assert_eq!(place_from_key("Vancouver"), None);
         assert_eq!(place_from_key("delta"), None);
+        assert_eq!(place_from_key("New Westminster_bc").as_deref(), Some("New Westminster"));
     }
 
     #[test]
