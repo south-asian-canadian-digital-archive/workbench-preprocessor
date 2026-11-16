@@ -163,14 +163,16 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     if a.is_identifier(&p.name) {
                         match s.authorities.resolve(a, &p.name) {
                             Ok(Some(res)) => {
-                                let typed = table.headings.get(&(row.line, col.clone(), p.name.clone()));
+                                let typed = table.headings.get(&(row.line, col.clone()));
+                                let agrees = typed.is_none_or(|hs| hs.iter().any(|h| suggest::headings_agree(h, &res.label)));
+                                let h = typed.map(|hs| hs.join("; ")).unwrap_or_default();
                                 match typed {
-                                    Some(h) if !suggest::headings_agree(h, &res.label) => s.stick(
+                                    Some(_) if !agrees => s.stick(
                                         Finding::new(
                                             Warning,
                                             "terms",
                                             format!(
-                                                "{col}: {} is \"{}\" at {}, but the sheet's heading says \"{h}\" - check the ID (a typo can land on another real heading)",
+                                                "{col}: {} is \"{}\" at {}, but none of the sheet's headings match it (\"{h}\") - check the ID (a typo can land on another real heading)",
                                                 p.name,
                                                 res.label,
                                                 a.name().to_uppercase()
