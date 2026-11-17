@@ -5,8 +5,8 @@ use std::cell::RefCell;
 
 type Hits = RefCell<Vec<(Rect, Hit)>>;
 use crossterm::event::KeyCode;
-use crate::sacda::precheck::Severity;
-use crate::sacda::tree::Kind;
+use sacda::precheck::Severity;
+use sacda::tree::Kind;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};

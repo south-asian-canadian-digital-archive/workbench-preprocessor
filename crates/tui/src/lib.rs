@@ -6,10 +6,10 @@
 
 mod view;
 
-use crate::sacda::bundle;
-use crate::sacda::config::Config;
-use crate::sacda::precheck::{Fix, Options, Report, Session};
-use crate::sacda::source::{self, Table};
+use sacda::bundle;
+use sacda::config::Config;
+use sacda::precheck::{Fix, Options, Report, Session};
+use sacda::source::{self, Table};
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,

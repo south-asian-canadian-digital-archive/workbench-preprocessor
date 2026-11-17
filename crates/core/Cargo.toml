@@ -1,0 +1,20 @@
+[package]
+name = "sacda-core"
+description = "SACDA ingest operations: load a sheet, check it against a site, write and run a Workbench bundle. No UI."
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "sacda"
+
+[dependencies]
+organise-legacy.workspace = true
+anyhow.workspace = true
+csv.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+url.workspace = true
+toml.workspace = true
+tempfile.workspace = true
+unicode-normalization.workspace = true

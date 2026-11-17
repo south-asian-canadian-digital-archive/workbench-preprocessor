@@ -5,7 +5,6 @@ use crate::modifiers::{
     resolve_language_mapping_url, FieldModelModifier, FileExtensionModifier, LanguageModifier,
     ParentIdModifier,
 };
-use crate::Modifier;
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::fs;
@@ -381,4 +380,17 @@ mod tests {
         assert!(Path::new(&items).parent().unwrap().exists());
         Ok(())
     }
+}
+
+/// The legacy modifiers `--only-run` / `--ignore-run` choose from.
+#[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq, Hash)]
+pub enum Modifier {
+    /// Extract parent ID from accessIdentifier column
+    ParentId,
+    /// Create file paths with parent directory and extensions
+    FileExtension,
+    /// Populate field_model based on file extension mappings
+    FieldModel,
+    /// Map field_language column codes to taxonomy term IDs via JSON export
+    Language,
 }

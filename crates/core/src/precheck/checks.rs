@@ -1,11 +1,11 @@
 //! The non-vocabulary checks: site, columns, structure, files, dates.
 
 use super::{Finding, Fix, Report, Session, Severity::*};
-use crate::sacda::edtf;
-use crate::sacda::site::{Login, JSONAPI_HELP};
-use crate::sacda::source::Table;
-use crate::sacda::suggest;
-use crate::sacda::tree::{media_for_extension, Kind, ID_COLUMNS};
+use crate::edtf;
+use crate::site::{Login, JSONAPI_HELP};
+use crate::source::Table;
+use crate::suggest;
+use crate::tree::{media_for_extension, Kind, ID_COLUMNS};
 
 /// Columns organise itself understands; not Drupal fields.
 pub const RESERVED: &[&str] = &[

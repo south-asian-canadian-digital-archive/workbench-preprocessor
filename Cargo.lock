@@ -1136,6 +1136,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "organise-legacy"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "calamine",
+ "clap",
+ "csv",
+ "encoding_rs",
+ "log",
+ "reqwest",
+ "serde",
+ "tempfile",
+ "toml",
+ "url",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1437,6 +1454,32 @@ name = "ryu"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
+
+[[package]]
+name = "sacda-core"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "csv",
+ "organise-legacy",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "unicode-normalization",
+ "url",
+]
+
+[[package]]
+name = "sacda-tui"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "ratatui",
+ "sacda-core",
+]
 
 [[package]]
 name = "schannel"
@@ -2330,20 +2373,13 @@ name = "workbench-preprocessor"
 version = "0.2.2"
 dependencies = [
  "anyhow",
- "calamine",
  "clap",
- "crossterm",
  "csv",
- "encoding_rs",
  "env_logger",
- "log",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
+ "organise-legacy",
+ "sacda-core",
+ "sacda-tui",
  "tempfile",
- "toml",
- "unicode-normalization",
  "url",
 ]
 

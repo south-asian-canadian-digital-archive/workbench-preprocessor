@@ -3,8 +3,8 @@
 //! header names renamed. Every rename is recorded so the report can tell the
 //! archivist to fix the sheet itself.
 
-use crate::csv_modifier::{normalize_cell, sanitize_text_in_place, CsvModifier};
-use crate::spreadsheet::csv_bytes_from_path;
+use organise_legacy::csv_modifier::{normalize_cell, sanitize_text_in_place, CsvModifier};
+use organise_legacy::spreadsheet::csv_bytes_from_path;
 use anyhow::{bail, Context, Result};
 use super::config::Config;
 use std::collections::HashMap;

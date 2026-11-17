@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 /// The pre-2026 command line, kept as `organise legacy ...` for old scripts.
 #[derive(Parser)]
@@ -68,17 +68,7 @@ pub struct LegacyCli {
     pub node: Option<String>,
 }
 
-#[derive(Clone, Debug, ValueEnum, PartialEq, Eq, Hash)]
-pub enum Modifier {
-    /// Extract parent ID from accessIdentifier column
-    ParentId,
-    /// Create file paths with parent directory and extensions
-    FileExtension,
-    /// Populate field_model based on file extension mappings
-    FieldModel,
-    /// Map field_language column codes to taxonomy term IDs via JSON export
-    Language,
-}
+pub use organise_legacy::Modifier;
 
 #[derive(Subcommand)]
 pub enum Commands {

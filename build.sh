@@ -9,10 +9,10 @@ BIN_NAME="organise"
 RELEASE_BIN="target/release/${BIN_NAME}"
 
 echo "Running clippy..."
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 echo "Running tests..."
-cargo test
+cargo test --workspace
 
 echo "Building release..."
 cargo build --release
@@ -30,7 +30,7 @@ mkdir -p bin
 echo ""
 echo "Copying to bin/..."
 mv -f "${RELEASE_BIN}" "bin/${BIN_NAME}"
-cp -f src/modifiers/field_model_mappings.toml bin/field_model_mappings.toml
+cp -f crates/legacy/src/modifiers/field_model_mappings.toml bin/field_model_mappings.toml
 
 echo ""
 echo "Done."

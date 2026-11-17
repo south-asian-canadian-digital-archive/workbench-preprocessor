@@ -59,7 +59,7 @@ jobs:
           # Cargo.toml is the source of truth for --version, so it must match the tag we ship.
           if [ "$(read_ver)" != "$VER" ]; then
             sed -i -E "0,/^version = \".*\"/s//version = \"${VER}\"/" Cargo.toml
-            sed -i -E "/^name = \"workbench-preprocessor\"$/{n;s/^version = \".*\"/version = \"${VER}\"/}" Cargo.lock
+            sed -i -E "/^name = \"(workbench-preprocessor|organise-legacy|sacda-core|sacda-tui)\"$/{n;s/^version = \".*\"/version = \"${VER}\"/}" Cargo.lock
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -qm "chore: release ${TAG}" Cargo.toml Cargo.lock
@@ -169,7 +169,7 @@ jobs:
         run: |
           mkdir -p release-artifacts
           cp "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" release-artifacts/
-          cp src/modifiers/field_model_mappings.toml release-artifacts/
+          cp crates/legacy/src/modifiers/field_model_mappings.toml release-artifacts/
           cp README.md release-artifacts/ 2>/dev/null || true
           cp LICENSE release-artifacts/ 2>/dev/null || true
           ( cd release-artifacts && tar czf "../workbench-preprocessor-${{ matrix.platform.name }}.tar.gz" . )
@@ -180,7 +180,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
           Copy-Item "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}" -Destination release-artifacts/
-          Copy-Item "src/modifiers/field_model_mappings.toml" -Destination release-artifacts/
+          Copy-Item "crates/legacy/src/modifiers/field_model_mappings.toml" -Destination release-artifacts/
           Copy-Item "README.md" -Destination release-artifacts/ -ErrorAction SilentlyContinue
           Copy-Item "LICENSE" -Destination release-artifacts/ -ErrorAction SilentlyContinue
           Compress-Archive -Path "release-artifacts/*" -DestinationPath "workbench-preprocessor-${{ matrix.platform.name }}.zip"

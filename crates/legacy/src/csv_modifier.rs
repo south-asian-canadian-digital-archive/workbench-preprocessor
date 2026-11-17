@@ -7,7 +7,7 @@ use log::warn;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 
-pub(crate) fn normalize_cell(value: &str) -> &str {
+pub fn normalize_cell(value: &str) -> &str {
     let trimmed = value.trim();
     if trimmed.eq_ignore_ascii_case("#value!") {
         ""
@@ -61,7 +61,7 @@ fn fix_common_mojibake(value: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn sanitize_text_in_place(value: &mut String) -> bool {
+pub fn sanitize_text_in_place(value: &mut String) -> bool {
     let mut changed = false;
 
     if value.contains('\u{00A0}') {

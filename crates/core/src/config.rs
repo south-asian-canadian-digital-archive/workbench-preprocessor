@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn loads_real_g_config() {
         // The submodule sits at g/scripts/workbench-preprocessor.
-        let g = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let g = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
         if !is_g_root(&g) {
             return; // standalone checkout of the preprocessor
         }

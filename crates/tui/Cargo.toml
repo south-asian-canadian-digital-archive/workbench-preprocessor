@@ -1,0 +1,11 @@
+[package]
+name = "sacda-tui"
+description = "The interactive organise screen, on top of sacda-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sacda-core.workspace = true
+anyhow.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true

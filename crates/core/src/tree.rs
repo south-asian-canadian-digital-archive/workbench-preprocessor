@@ -432,10 +432,10 @@ pub fn build(table: &Table, cfg: &Config, files: &FileIndex) -> Tree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sacda::source::parse;
+    use crate::source::parse;
 
     fn cfg() -> Option<Config> {
-        let g = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let g = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
         Config::load_from(&g).ok()
     }
 

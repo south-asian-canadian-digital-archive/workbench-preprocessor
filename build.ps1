@@ -40,7 +40,7 @@ New-Item -ItemType Directory -Force -Path "bin" | Out-Null
 Write-Host ""
 Write-Host "Copying to bin/..."
 Move-Item -Force $RELEASE_EXE "bin/${BIN_NAME}.exe"
-Copy-Item -Force "src/modifiers/field_model_mappings.toml" "bin/field_model_mappings.toml"
+Copy-Item -Force "crates/legacy/src/modifiers/field_model_mappings.toml" "bin/field_model_mappings.toml"
 
 Write-Host ""
 Write-Host "Done."

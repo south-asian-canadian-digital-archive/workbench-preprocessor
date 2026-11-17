@@ -6,11 +6,11 @@
 //! so the ingest itself never creates a term.
 
 use super::{Finding, Fix, Report, Session, Severity::*};
-use crate::sacda::authority::{self, Resolved};
-use crate::sacda::config::FieldDef;
-use crate::sacda::source::Table;
-use crate::sacda::suggest;
-use crate::sacda::tree::Kind;
+use crate::authority::{self, Resolved};
+use crate::config::FieldDef;
+use crate::source::Table;
+use crate::suggest;
+use crate::tree::Kind;
 use std::collections::BTreeMap;
 
 /// Vocabularies an ingest may never add to.

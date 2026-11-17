@@ -89,9 +89,16 @@ means the terminal's own text selection needs Shift/Option held while dragging.)
 
 ## Code map
 
-`src/sacda/`: `config` · `source` (load/clean) · `tree` (identifiers -> tree, models) · `precheck/` (checks, vocab,
-fixes, `Session::settle`) · `authority/` (LC lookups, disk cache) · `suggest` · `edtf` · `site` (read-only JSON:API) ·
-`bundle` · `run` · `doctor`. `src/tui/` is the screen. Tests: `cargo test` (live LC test: `cargo test -- --ignored`).
+A Cargo workspace, so a change to the screen doesn't rebuild the checks:
+
+| Crate | | |
+|---|---|---|
+| `crates/core` | `sacda-core` (`use sacda::...`) | Everything that reads or changes data, no UI: `config` · `source` (load/clean) · `tree` (identifiers -> tree, models) · `precheck/` (checks, vocab, fixes, `Session::settle`) · `authority/` (LC lookups, disk cache) · `suggest` · `edtf` · `site` (read-only JSON:API) · `bundle` · `run` · `doctor` |
+| `crates/tui` | `sacda-tui` | The interactive screen; only calls into `sacda-core` |
+| `crates/legacy` | `organise-legacy` | The old modifier pipeline (`organise legacy`) |
+| `.` | `workbench-preprocessor` | The `organise` binary: CLI + plain mode |
+
+Tests: `cargo test --workspace` (live LC test: `cargo test --workspace -- --ignored`).
 
 ---
 
