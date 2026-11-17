@@ -28,6 +28,7 @@ clap = { version = "4.5", default-features = false, features = [
 ] }
 ratatui = "0.29"
 crossterm = "0.28"
+indicatif = "0.17"
 organise-legacy = { path = "crates/legacy" }
 sacda-core = { path = "crates/core" }
 sacda-tui = { path = "crates/tui" }
@@ -61,6 +62,11 @@ env_logger = "0.11"
 tempfile.workspace = true
 csv.workspace = true
 url.workspace = true
+
+# Test builds keep only line tables (enough for backtraces): full debug info
+# made target/debug several GB.
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 opt-level = 3

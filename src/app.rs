@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use organise::sacda::bundle;
 use organise::sacda::config::Config;
 use organise::sacda::precheck::{Fix, Options, Session, Severity};
-use organise::sacda::{doctor, run, source};
+use organise::sacda::{doctor, source};
 use organise::{tui, Cli, Command};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ pub fn main(cli: Cli) -> Result<()> {
         }
         Some(Command::Ingest { bundle, check_only }) => {
             let cfg = Config::load(g)?;
-            return run::run_bundle(&cfg, Path::new(&bundle), check_only);
+            return tui::ingest(&cfg, Path::new(&bundle), check_only);
         }
         _ => {}
     }
@@ -42,7 +42,7 @@ pub fn main(cli: Cli) -> Result<()> {
             only: cli.only.clone(),
         })?;
         if let Some(tui::Outcome::Ingest { cfg, dir }) = outcome {
-            return run::run_bundle(&cfg, &dir, false);
+            return tui::ingest(&cfg, &dir, false);
         }
         return Ok(());
     }
@@ -117,7 +117,7 @@ pub fn main(cli: Cli) -> Result<()> {
         println!("  step: {}{}", s.name, if s.covers.is_empty() { String::new() } else { format!(" (+ {})", s.covers.join(", ")) });
     }
     if cli.ingest {
-        run::run_bundle(&cfg, &written.dir, false)?;
+        tui::ingest(&cfg, &written.dir, false)?;
     } else {
         println!("\nTo ingest: organise ingest \"{}\"", written.dir.display());
     }

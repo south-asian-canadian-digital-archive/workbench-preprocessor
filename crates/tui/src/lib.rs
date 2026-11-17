@@ -19,6 +19,9 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScree
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
+pub mod ingest;
+pub use ingest::ingest;
+
 use sacda::bundle;
 use sacda::config::Config;
 use sacda::precheck::{Fix, Options, Report, Session, Severity};
@@ -95,6 +98,10 @@ pub enum Input {
 
 pub struct Review {
     pub input_name: String,
+    /// The whole sheet as read, before any subset: a different subset is
+    /// cut from this without reading or checking the site again.
+    pub full: Table,
+    /// The rows being checked (the whole sheet, or a subset of it).
     pub original: Table,
     pub fixed: Table,
     pub report: Report,
@@ -191,6 +198,7 @@ enum Done {
     Pulled(Pulled),
     Opened {
         input: String,
+        full: Table,
         table: Table,
         session: Box<Session>,
         settled: Settled,
@@ -200,6 +208,8 @@ enum Done {
         session: Box<Session>,
         settled: Settled,
         table: Option<Table>,
+        /// The whole re-read sheet, before the subset.
+        full: Option<Table>,
         /// Decisions moved onto the re-read sheet's rows.
         decisions: Option<(Vec<Fix>, Vec<Fix>)>,
         cancelled: bool,
@@ -583,6 +593,7 @@ impl App {
             let run = || -> Result<Done, String> {
                 p.say(if source::is_url(&input) { "downloading the sheet from Google" } else { "reading the sheet" });
                 let mut table = source::load_for(&input, sheet.as_deref(), &cfg).map_err(|e| format!("{e:#}"))?;
+                let full = table.clone();
                 if let Some(s) = &subset {
                     s.apply(&mut table).map_err(|e| format!("{e:#}"))?;
                 }
@@ -602,7 +613,7 @@ impl App {
                 if p.cancelled() {
                     return Err("cancelled".into());
                 }
-                Ok(Done::Opened { input, table, session: Box::new(session), settled, accepted })
+                Ok(Done::Opened { input, full, table, session: Box::new(session), settled, accepted })
             };
             let _ = tx.send(run());
         });
@@ -636,11 +647,13 @@ impl App {
                 let mut accepted = accepted;
                 let mut rejected = rejected;
                 let mut decisions = None;
+                let mut full = None;
                 let (mut session, table) = match (reload, old) {
                     (false, Some(s)) => (s, None),
                     _ => {
                         p.say(if source::is_url(&input) { "downloading the sheet again" } else { "re-reading the sheet" });
                         let mut t = source::load_for(&input, sheet.as_deref(), &cfg).map_err(|e| format!("{e:#}"))?;
+                        full = Some(t.clone());
                         if let Some(s) = &subset {
                             s.apply(&mut t).map_err(|e| format!("{e:#}"))?;
                         }
@@ -656,7 +669,7 @@ impl App {
                 let settled = session.settle(base, &accepted, &rejected);
                 let cancelled = p.cancelled();
                 session.job = Default::default();
-                Ok(Done::Rechecked { session: Box::new(session), settled, table, decisions, cancelled })
+                Ok(Done::Rechecked { session: Box::new(session), settled, table, full, decisions, cancelled })
             };
             let _ = tx.send(run());
         });
@@ -670,6 +683,30 @@ impl App {
             detachable: false,
         });
         self.status.clear();
+    }
+
+    /// The rows changed (`s`) on the review screen: cut them from the sheet
+    /// already read and re-check with what's already fetched from the site -
+    /// no download, no vocabulary fetch. Decisions follow their rows.
+    fn use_subset(&mut self) {
+        let subset = match &self.screen {
+            Screen::Review(r) => self.subset_for(&r.input_name),
+            _ => return,
+        };
+        let Screen::Review(r) = &mut self.screen else { return };
+        let mut t = r.full.clone();
+        if let Some(s) = &subset {
+            if let Err(e) = s.apply(&mut t) {
+                self.status = format!("{e:#}");
+                return;
+            }
+        }
+        r.accepted = sacda::precheck::remap_rows(&r.accepted, &r.original, &t);
+        r.rejected = sacda::precheck::remap_rows(&r.rejected, &r.original, &t);
+        r.original = t;
+        // The last check was of other rows: what's shown is stale until this one's done.
+        r.changes += 1;
+        self.start_recheck(false);
     }
 
     fn cancel_job(&mut self) {
@@ -706,10 +743,11 @@ impl App {
                     p.label, p.rows
                 );
             }
-            Ok(Done::Opened { input, table, session, settled, accepted }) => {
+            Ok(Done::Opened { input, full, table, session, settled, accepted }) => {
                 let (fixed, report, applied) = settled;
                 let mut review = Review {
                     input_name: input,
+                    full,
                     original: table,
                     fixed,
                     report,
@@ -731,7 +769,7 @@ impl App {
                 self.screen = Screen::Review(Box::new(review));
                 self.status.clear();
             }
-            Ok(Done::Rechecked { session, settled, table, decisions, cancelled }) => {
+            Ok(Done::Rechecked { session, settled, table, full, decisions, cancelled }) => {
                 self.session = Some(*session);
                 if cancelled {
                     self.status = "Re-check cancelled - showing the last full check".into();
@@ -742,6 +780,9 @@ impl App {
                 let (fixed, report, applied) = settled;
                 if let Some(t) = table {
                     r.original = t;
+                }
+                if let Some(t) = full {
+                    r.full = t;
                 }
                 if let Some((a, rj)) = decisions {
                     r.accepted = a;
@@ -879,9 +920,7 @@ fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
         app.poll_job();
         if app.reread_after_job && app.job.is_none() {
             app.reread_after_job = false;
-            if matches!(app.screen, Screen::Review(_)) {
-                app.start_recheck(true);
-            }
+            app.use_subset();
         }
         app.poll_counts();
         term.draw(|f| view::draw(f, app))?;
@@ -1108,9 +1147,9 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                                     if reviewing.is_some() && changed {
                                         if app.job.is_some() {
                                             app.reread_after_job = true;
-                                            app.status = "Rows saved - the sheet is re-read with them when this check finishes".into();
+                                            app.status = "Rows saved - they're used when this check finishes".into();
                                         } else {
-                                            app.start_recheck(true);
+                                            app.use_subset();
                                         }
                                     }
                                 }

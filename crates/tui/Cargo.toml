@@ -9,3 +9,4 @@ sacda-core.workspace = true
 anyhow.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+indicatif.workspace = true

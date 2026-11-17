@@ -43,10 +43,13 @@ Re-run it to update. From source: `cargo build --release`.
   own row numbers: `12`, `12,15`, `-40` (up to 40), `100-` (100 to the end), `12-40`, or an identifier such as
   `2024_19_1545` (it and everything under it). The rows of the picked items' collection and series always come
   along. It's remembered per sheet and shown in the header ("only rows 12-40"); `--only` does the same on the
-  command line, and `s` works on the review screen too (even mid-check): the sheet is re-read with the new rows and
-  the decisions already made carry over, following each row by its identifier, so rows added or removed in the
+  command line, and `s` works on the review screen too (even mid-check): the new rows are cut from the sheet already read and
+  re-checked with what's already fetched from the site (about a second), and the decisions already made carry over, following each row by its identifier, so rows added or removed in the
   sheet don't move a fix onto another item. Collections and series already on the site are added to, and items already there are left out
   (identifiers are unique), so overlapping or repeated subsets just ingest what's new.
+- **Ingesting** (`i`, `organise ingest`, `--ingest`) streams Workbench's output live, the items secondary task's
+  too, with a progress bar pinned to the bottom: step n of N, records done out of the step's CSV rows, time so far
+  and roughly how long is left. Each step's full log is in `g/logs/organise/<bundle>-<step>.log`.
 - **Temporary files:** `c` on the first screen lists what organise keeps in its cache folder (downloaded Google
   Sheets, the id.loc.gov lookup cache) with sizes, and deletes them on Enter. Nothing is cleaned automatically.
   Bundles, logs, rollback files and the id map are never touched - they record what was ingested.

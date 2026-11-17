@@ -2,16 +2,53 @@
 //! `--check` first (Workbench's own validation against the live site), then the
 //! real runs. A failed check stops everything before anything is written.
 
-use super::bundle::Manifest;
+use super::bundle::{Manifest, Step};
 use super::config::Config;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// What a run reports as it goes, so a screen can show progress. Plain
+/// `run_bundle` just prints the lines.
+pub enum Event<'a> {
+    /// A Workbench run starts: what it is, which step of how many, and how
+    /// many records it should get through (0 = not known, e.g. a check).
+    Stage { label: &'a str, index: usize, of: usize, total: usize, checking: bool },
+    /// A line of output (organise's or Workbench's).
+    Line(&'a str),
+    /// Workbench finished one record: created, skipped as already there, or failed.
+    Record,
+}
+
+/// Lines Workbench prints once per record.
+fn is_record(line: &str) -> bool {
+    let t = line.trim_start().trim_start_matches(['+', '-', ' ']);
+    let t = t.strip_prefix("Error: ").unwrap_or(t);
+    (t.starts_with("Node for ") && (t.contains(" created at ") || t.contains(" not created")))
+        || (t.starts_with("Term \"") && (t.ends_with(" created.") || t.contains(" not created") || t.contains(" already exists")))
+        || t.contains("skipping it.")
+}
+
+/// Rows a step's CSVs hold (its own, plus those of the tasks it covers).
+fn rows_in(dir: &Path, step: &Step) -> usize {
+    let csv_of = |config: &str| -> Option<String> {
+        let text = std::fs::read_to_string(dir.join(config)).ok()?;
+        text.lines().find_map(|l| l.strip_prefix("input_csv:")).map(|v| v.trim().trim_matches('"').to_string())
+    };
+    let count = |csv: String| -> usize {
+        csv::Reader::from_path(dir.join(csv)).map(|mut r| r.records().count()).unwrap_or(0)
+    };
+    let mut n = csv_of(&step.config).map(count).unwrap_or(0);
+    for c in &step.covers {
+        n += csv_of(&format!("{c}.config.yml")).map(count).unwrap_or(0);
+    }
+    n
+}
+
 /// `uv run --project <workbench> python workbench --config <cfg>`, from the
 /// workbench folder, streaming its output. Workbench exits 0 even when a node
 /// or media fails, so its `ERROR` lines are counted and returned too.
-fn workbench(cfg: &Config, config: &Path) -> Result<(bool, Vec<String>)> {
+fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(bool, Vec<String>)> {
     use std::io::{BufRead, BufReader};
     let root = cfg.workbench_root();
     if !root.join("workbench").is_file() {
@@ -26,6 +63,8 @@ fn workbench(cfg: &Config, config: &Path) -> Result<(bool, Vec<String>)> {
         .arg("--config")
         .arg(config)
         .current_dir(&root)
+        // Piped, Python holds output back in big blocks: no live progress.
+        .env("PYTHONUNBUFFERED", "1")
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -34,7 +73,10 @@ fn workbench(cfg: &Config, config: &Path) -> Result<(bool, Vec<String>)> {
     let mut errors = Vec::new();
     if let Some(out) = child.stdout.take() {
         for line in BufReader::new(out).lines().map_while(Result::ok) {
-            println!("{line}");
+            ev(Event::Line(&line));
+            if is_record(&line) {
+                ev(Event::Record);
+            }
             let t = line.trim_start().trim_start_matches("- ");
             if t.starts_with("ERROR") || t.starts_with("Error:") || t.contains("Traceback") {
                 errors.push(line);
@@ -59,6 +101,8 @@ fn workbench_check(cfg: &Config, config: &Path) -> Result<(bool, String)> {
         .arg(config)
         .arg("--check")
         .current_dir(&root)
+        // Piped, Python holds output back in big blocks: no live progress.
+        .env("PYTHONUNBUFFERED", "1")
         .output()
         .context("couldn't start `uv` - is it installed? (run `organise doctor`)")?;
     let text = format!(
@@ -75,69 +119,91 @@ fn workbench_check(cfg: &Config, config: &Path) -> Result<(bool, String)> {
 }
 
 pub fn run_bundle(cfg: &Config, dir: &Path, check_only: bool) -> Result<()> {
-    let m = Manifest::read(dir)?;
-    println!("Bundle for {} ({}): {} component(s), {} item(s), {} new term(s)", m.site, m.host, m.components, m.items, m.new_terms);
+    run_bundle_with(cfg, dir, check_only, &mut |e| {
+        if let Event::Line(l) = e {
+            println!("{l}");
+        }
+    })
+}
 
-    println!("\n== Workbench --check ==");
+pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn FnMut(Event)) -> Result<()> {
+    let m = Manifest::read(dir)?;
+    let say = |ev: &mut dyn FnMut(Event), s: String| ev(Event::Line(&s));
+    say(ev, format!("Bundle for {} ({}): {} component(s), {} item(s), {} new term(s)", m.site, m.host, m.components, m.items, m.new_terms));
+
+    // Every Workbench run, in order, for the "step n of N" count.
+    let (terms, rest): (Vec<_>, Vec<_>) = m.steps.iter().partition(|s| s.name.starts_with("terms-"));
+    let runs = if check_only { terms.len() + rest.len() } else { 2 * (terms.len() + rest.len()) };
+    let mut n = 0;
+    let check = |ev: &mut dyn FnMut(Event), step: &Step, n: &mut usize| -> Result<()> {
+        *n += 1;
+        let label = format!("check {}", step.name);
+        ev(Event::Stage { label: &label, index: *n, of: runs, total: 0, checking: true });
+        check_step(cfg, dir, &step.config, &step.name, ev)
+    };
+
+    say(ev, "\n== Workbench --check ==".into());
     // Terms checks can only pass once the terms exist, and component/item
     // checks look terms up - so check terms jobs alone first, then run them,
     // then check the rest.
-    let (terms, rest): (Vec<_>, Vec<_>) = m.steps.iter().partition(|s| s.name.starts_with("terms-"));
     for step in &terms {
-        check_step(cfg, dir, &step.config, &step.name)?;
+        check(ev, step, &mut n)?;
     }
     if check_only && !terms.is_empty() {
-        println!("(skipping the ingest checks: they need the new terms, which a check-only run doesn't create)");
+        say(ev, "(skipping the ingest checks: they need the new terms, which a check-only run doesn't create)".into());
         return Ok(());
     }
+    let run = |ev: &mut dyn FnMut(Event), step: &Step, n: &mut usize| -> Result<(bool, Vec<String>)> {
+        *n += 1;
+        let label = if step.covers.is_empty() { step.name.clone() } else { format!("{} (+ {})", step.name, step.covers.join(", ")) };
+        ev(Event::Line(&format!("\n== {label} ==")));
+        ev(Event::Stage { label: &label, index: *n, of: runs, total: rows_in(dir, step), checking: false });
+        workbench(cfg, &dir.join(&step.config), ev)
+    };
     if !check_only {
         for step in &terms {
-            println!("\n== {} ==", step.name);
-            let (ok, errors) = workbench(cfg, &dir.join(&step.config))?;
+            let (ok, errors) = run(ev, step, &mut n)?;
             if !ok || !errors.is_empty() {
                 bail!("{} failed ({} error line(s)) - see the log under g/logs/organise/. Nothing after it ran.", step.name, errors.len());
             }
         }
     }
     for step in &rest {
-        check_step(cfg, dir, &step.config, &step.name)?;
+        check(ev, step, &mut n)?;
     }
     if check_only {
-        println!("\nAll checks passed. Run without --check-only to ingest.");
+        say(ev, "\nAll checks passed. Run without --check-only to ingest.".into());
         return Ok(());
     }
     let mut problems: Vec<String> = Vec::new();
     for step in &rest {
-        println!(
-            "\n== {}{} ==",
-            step.name,
-            if step.covers.is_empty() { String::new() } else { format!(" (+ {})", step.covers.join(", ")) }
-        );
-        let (ok, errors) = workbench(cfg, &dir.join(&step.config))?;
+        let (ok, errors) = run(ev, step, &mut n)?;
         if !ok {
             bail!("{} failed - see the log under g/logs/organise/. Rollback files are in g/rollback/.", step.name);
         }
         problems.extend(errors.into_iter().map(|e| format!("{}: {e}", step.name)));
     }
     if !problems.is_empty() {
-        println!("\nIngest finished WITH {} ERROR(S) - those nodes/media need fixing (log: g/logs/organise/):", problems.len());
+        say(ev, format!("\nIngest finished WITH {} ERROR(S) - those nodes/media need fixing (log: g/logs/organise/):", problems.len()));
         for p in &problems {
-            println!("  {p}");
+            say(ev, format!("  {p}"));
         }
         bail!("{} Workbench error(s) during the ingest", problems.len());
     }
-    println!("\nIngest finished. Derivatives (thumbnails, OCR) keep generating on the site for a while.");
+    say(ev, "\nIngest finished. Derivatives (thumbnails, OCR) keep generating on the site for a while.".into());
     Ok(())
 }
 
-fn check_step(cfg: &Config, dir: &Path, config: &str, name: &str) -> Result<()> {
-    print!("  {name}: ");
+fn check_step(cfg: &Config, dir: &Path, config: &str, name: &str, ev: &mut dyn FnMut(Event)) -> Result<()> {
     let (ok, text) = workbench_check(cfg, &dir.join(config))?;
     if ok {
-        println!("ok");
+        ev(Event::Line(&format!("  {name}: ok")));
         Ok(())
     } else {
-        println!("FAILED\n{text}");
+        ev(Event::Line(&format!("  {name}: FAILED")));
+        for l in text.lines() {
+            ev(Event::Line(l));
+        }
         bail!("Workbench's check failed for {name}; nothing was ingested")
     }
 }
