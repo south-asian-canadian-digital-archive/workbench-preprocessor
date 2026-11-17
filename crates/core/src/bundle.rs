@@ -243,7 +243,7 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
     // Rows and files that don't pair up: left out when that choice is on.
     let gap_on = |g: Gap| applied.contains(&Fix::FileGap(g));
     let mut skipped: Vec<(usize, String)> = Vec::new();
-    for n in report.tree.of_kind(Kind::Item) {
+    for n in report.tree.of_kind(Kind::Item).filter(|n| !report.on_site_items.contains(&n.id)) {
         let rows_of = |n: &Node| {
             let mut r: Vec<usize> = n.row.into_iter().chain(n.files.iter().map(|f| f.row)).collect();
             r.sort_unstable();

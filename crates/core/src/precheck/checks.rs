@@ -206,16 +206,20 @@ pub fn structure(s: &mut Session, table: &Table, report: &mut Report) {
     for (id, described, title) in roots {
         if described {
             if s.site.is_some() {
+                // Already there (an earlier batch, or an earlier subset of
+                // this sheet): add to it. Its row isn't ingested again, so
+                // edits to the collection's own metadata don't reach the site.
                 if let Some(existing) = s.find_node(&id) {
                     report.findings.push(Finding::new(
-                        Error,
+                        Info,
                         "structure",
                         format!(
-                            "collection {id} is already on the site (node {}, \"{}\"). Remove its row to add \
-                             to it, or change the identifier.",
+                            "collection {id} is already on the site (node {}, \"{}\") - adding to it; its row isn't \
+                             ingested again (edit the collection on the site to change it)",
                             existing.nid, existing.title
                         ),
                     ));
+                    report.attach.insert(id.clone(), existing);
                 }
             }
             continue;
@@ -292,23 +296,33 @@ pub fn structure(s: &mut Session, table: &Table, report: &mut Report) {
         .collect();
     for (id, row, title) in items {
         let line = row.map(|r| table.rows[r].line).unwrap_or(0);
+        // Access identifiers are unique: one already on the site (an earlier
+        // batch or subset) is left out, never created twice.
+        if s.site.is_some() && report.attach.keys().any(|r| id.starts_with(&format!("{r}_"))) && s.find_node(&id).is_some() {
+            report.findings.push(
+                Finding::new(Info, "structure", "item is already on the site - left out (identifiers are unique)").at(line, id.clone()),
+            );
+            report.on_site_items.insert(id);
+            continue;
+        }
         if title.is_empty() {
             report
                 .findings
                 .push(Finding::new(Error, "structure", "item has no title").at(line, id.clone()));
         }
-        if s.site.is_some() && report.attach.keys().any(|r| id.starts_with(&format!("{r}_"))) {
-            if let Some(existing) = s.find_node(&id) {
-                report.findings.push(
-                    Finding::new(
-                        Error,
-                        "structure",
-                        format!("item is already on the site (node {}) - remove the row or change its identifier", existing.nid),
-                    )
-                    .at(line, id),
-                );
-            }
-        }
+    }
+    // Nothing to do: every item picked is on the site already.
+    let new_items = report.tree.of_kind(Kind::Item).filter(|n| !report.on_site_items.contains(&n.id)).count();
+    if new_items == 0 && !report.on_site_items.is_empty() {
+        report.findings.push(Finding::new(
+            Error,
+            "structure",
+            format!(
+                "nothing new to ingest - all {} item(s){} are already on the site",
+                report.on_site_items.len(),
+                table.subset.as_ref().map(|s| format!(" in {s}")).unwrap_or_default()
+            ),
+        ));
     }
     for i in report.tree.extra_file_rows.clone() {
         let row = &table.rows[i];
@@ -362,7 +376,7 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
     let bare: Vec<(usize, String)> = report
         .tree
         .of_kind(Kind::Item)
-        .filter(|n| n.files.is_empty())
+        .filter(|n| n.files.is_empty() && !report.on_site_items.contains(&n.id))
         .map(|n| (line_of(n), n.id.clone()))
         .collect();
     if !bare.is_empty() {
@@ -393,6 +407,7 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
     let missing: Vec<(usize, String)> = report
         .tree
         .of_kind(Kind::Item)
+        .filter(|n| !report.on_site_items.contains(&n.id))
         .flat_map(|n| n.files.iter().filter(|f| f.path.is_none()).map(move |f| (table.rows[f.row].line, format!("{} wants '{}'", n.id, f.wanted))))
         .collect();
     if s.files.exists && !missing.is_empty() {
@@ -413,8 +428,15 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
         );
     }
 
-    // Files no row uses.
-    if s.files.exists {
+    // Files no row uses. Not for part of a sheet: the rest of the sheet's
+    // files are in the folder too.
+    if s.files.exists && table.subset.is_some() {
+        out.push(Finding::new(
+            Info,
+            "files",
+            "only part of the sheet is used, so files no row uses aren't looked for".to_string(),
+        ));
+    } else if s.files.exists {
         let used: std::collections::HashSet<&std::path::Path> = report
             .tree
             .of_kind(Kind::Item)
@@ -466,7 +488,7 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
         }
     }
 
-    for node in report.tree.of_kind(Kind::Item) {
+    for node in report.tree.of_kind(Kind::Item).filter(|n| !report.on_site_items.contains(&n.id)) {
         for f in &node.files {
             let line = table.rows[f.row].line;
             if f.path.is_none() {

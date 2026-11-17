@@ -164,6 +164,11 @@ pub struct Cli {
     #[arg(long)]
     pub files_by_identifier: bool,
 
+    /// Only part of the sheet, picked like PDF pages by sheet row: 12 | 12,15 | -40 | 100- | 12-40, or by identifier
+    /// (2024_19_1545 = it and everything under it). The rows of their collections/series always come along.
+    #[arg(long, value_name = "SPEC")]
+    pub only: Option<String>,
+
     /// Skip all site lookups (quick structural check only; never writes a bundle)
     #[arg(long)]
     pub offline: bool,

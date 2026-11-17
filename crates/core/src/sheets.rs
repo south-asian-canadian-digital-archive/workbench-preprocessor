@@ -29,6 +29,10 @@ pub struct Sheet {
     pub folder: Option<PathBuf>,
     #[serde(default)]
     pub files_by_identifier: bool,
+    /// Only these rows (page-style: "12-40, 57, 100-") or identifiers;
+    /// empty = the whole sheet. See `subset::Subset`.
+    #[serde(default)]
+    pub subset: String,
     /// Last used, seconds since 1970.
     #[serde(default)]
     pub used: u64,

@@ -39,6 +39,12 @@ Re-run it to update. From source: `cargo build --release`.
   panel shows how many files it holds - counted in the background), `m` to switch file names between "the `file`
   column, else `<identifier>.<ext>`" and "always `<identifier>.<ext>`" (SACDA staging; also
   `--files-by-identifier`). Then Enter checks it (a link is downloaded fresh for the check).
+- **Part of a sheet:** `s` on a sheet opens a box for which rows to use, written like PDF pages with the sheet's
+  own row numbers: `12`, `12,15`, `-40` (up to 40), `100-` (100 to the end), `12-40`, or an identifier such as
+  `2024_19_1545` (it and everything under it). The rows of the picked items' collection and series always come
+  along. It's remembered per sheet and shown in the header ("only rows 12-40"); `--only` does the same on the
+  command line. Collections and series already on the site are added to, and items already there are left out
+  (identifiers are unique), so overlapping or repeated subsets just ingest what's new.
 - **Checks run in the background.** Pulling a sheet and its first check show a progress dialog (step, a bar when
   it knows how far along it is, time so far; Esc or its button cancels). Re-checks stay in the status line, so you
   can keep reading and deciding findings while one runs.

@@ -43,6 +43,8 @@ pub struct Start {
     pub collection_title: Option<String>,
     pub accept_suggestions: bool,
     pub files_by_identifier: bool,
+    /// `--only`: the subset for the sheet given on the command line.
+    pub only: Option<String>,
 }
 
 pub enum Outcome {
@@ -81,6 +83,8 @@ pub enum Input {
     Url(String),
     /// Typing the folder the access files are in.
     Folder(String),
+    /// Typing which rows to use (page-style: 12-40, 57, 100-).
+    Subset(String),
     /// Typing the site name to confirm a protected site.
     Confirm(String),
     /// Typing a title for a collection nobody described.
@@ -514,6 +518,12 @@ impl App {
         self.folder_counts.borrow().values().any(Option::is_none)
     }
 
+    /// The rows chosen for a sheet (`s`), if not the whole sheet.
+    pub fn subset_for(&self, input: &str) -> Option<sacda::subset::Subset> {
+        let raw = self.sheets.get(input).map(|s| s.subset.clone()).unwrap_or_default();
+        sacda::subset::Subset::parse(&raw).ok().flatten()
+    }
+
     fn options(&self, input: &str) -> Options {
         Options {
             site: Some(self.site().to_string()),
@@ -556,6 +566,7 @@ impl App {
         let cfg = self.cfg.clone();
         let sheet = self.start.sheet.clone();
         let opts = self.options(&input);
+        let subset = self.subset_for(&input);
         let accept = self.start.accept_suggestions;
         let progress = Arc::new(Progress::default());
         let p = progress.clone();
@@ -564,7 +575,10 @@ impl App {
         std::thread::spawn(move || {
             let run = || -> Result<Done, String> {
                 p.say(if source::is_url(&input) { "downloading the sheet from Google" } else { "reading the sheet" });
-                let table = source::load_for(&input, sheet.as_deref(), &cfg).map_err(|e| format!("{e:#}"))?;
+                let mut table = source::load_for(&input, sheet.as_deref(), &cfg).map_err(|e| format!("{e:#}"))?;
+                if let Some(s) = &subset {
+                    s.apply(&mut table).map_err(|e| format!("{e:#}"))?;
+                }
                 if p.cancelled() {
                     return Err("cancelled".into());
                 }
@@ -605,6 +619,7 @@ impl App {
         let cfg = self.cfg.clone();
         let sheet = self.start.sheet.clone();
         let opts = self.options(&input);
+        let subset = self.subset_for(&input);
         let old = self.session.take();
         let progress = Arc::new(Progress::default());
         let p = progress.clone();
@@ -615,7 +630,10 @@ impl App {
                     (false, Some(s)) => (s, None),
                     _ => {
                         p.say(if source::is_url(&input) { "downloading the sheet again" } else { "re-reading the sheet" });
-                        let t = source::load_for(&input, sheet.as_deref(), &cfg).map_err(|e| format!("{e:#}"))?;
+                        let mut t = source::load_for(&input, sheet.as_deref(), &cfg).map_err(|e| format!("{e:#}"))?;
+                        if let Some(s) = &subset {
+                            s.apply(&mut t).map_err(|e| format!("{e:#}"))?;
+                        }
                         (Session::new(cfg, &input, opts).map_err(|e| format!("{e:#}"))?, Some(t))
                     }
                 };
@@ -801,7 +819,13 @@ fn teardown(t: &mut Term) {
 }
 
 pub fn run(start: Start) -> Result<Option<Outcome>> {
+    let only = start.only.clone();
+    let first = start.input.clone();
     let mut app = App::new(start);
+    if let (Some(only), Some(input)) = (only, first) {
+        app.sheets.entry(&input).subset = only;
+        app.sheets.save();
+    }
     let mut term = setup()?;
     // Restore the terminal even if something below panics.
     let hook = std::panic::take_hook();
@@ -872,7 +896,7 @@ fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
 fn paste(app: &mut App, text: &str) {
     let one_line: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
     match &mut app.input {
-        Input::Url(b) | Input::Folder(b) | Input::Confirm(b) | Input::Title { buf: b, .. } => b.push_str(one_line.trim()),
+        Input::Url(b) | Input::Folder(b) | Input::Subset(b) | Input::Confirm(b) | Input::Title { buf: b, .. } => b.push_str(one_line.trim()),
         Input::None => {
             // A link pasted straight onto the pick screen: open the box with it.
             if matches!(app.screen, Screen::Pick) && sheet_id(&one_line).is_some() {
@@ -979,7 +1003,7 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
     // Text input takes every key until Enter/Esc.
     match &mut app.input {
         Input::None => {}
-        Input::Url(buf) | Input::Folder(buf) | Input::Confirm(buf) | Input::Title { buf, .. } => {
+        Input::Url(buf) | Input::Folder(buf) | Input::Subset(buf) | Input::Confirm(buf) | Input::Title { buf, .. } => {
             match key.code {
                 KeyCode::Esc => {
                     app.input = Input::None;
@@ -1021,6 +1045,23 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                                 } else {
                                     app.status = format!("{} isn't a folder", p.display());
                                     app.input = Input::Folder(raw);
+                                }
+                            }
+                        }
+                        Input::Subset(raw) => {
+                            let Some(sel) = app.selected_input() else { return Ok(Flow::Continue) };
+                            match sacda::subset::Subset::parse(&raw) {
+                                Ok(s) => {
+                                    app.status = match &s {
+                                        Some(s) => format!("Only {} - Enter to check", s.describe()),
+                                        None => "The whole sheet".into(),
+                                    };
+                                    app.sheets.entry(&sel).subset = raw.trim().to_string();
+                                    app.sheets.save();
+                                }
+                                Err(e) => {
+                                    app.status = format!("{e:#}");
+                                    app.input = Input::Subset(raw);
                                 }
                             }
                         }
@@ -1097,6 +1138,13 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                     Some(sel) => {
                         let now = app.sheets.get(&sel).and_then(|s| s.folder.as_ref()).map(|p| p.display().to_string());
                         app.input = Input::Folder(now.unwrap_or_default());
+                    }
+                    None => app.status = "Pick a sheet first, or paste a link with u".into(),
+                },
+                KeyCode::Char('s') => match app.selected_input() {
+                    Some(sel) => {
+                        let now = app.sheets.get(&sel).map(|s| s.subset.clone()).unwrap_or_default();
+                        app.input = Input::Subset(now);
                     }
                     None => app.status = "Pick a sheet first, or paste a link with u".into(),
                 },

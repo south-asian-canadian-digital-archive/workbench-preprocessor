@@ -25,5 +25,6 @@ pub mod run;
 pub mod sheets;
 pub mod site;
 pub mod source;
+pub mod subset;
 pub mod suggest;
 pub mod tree;

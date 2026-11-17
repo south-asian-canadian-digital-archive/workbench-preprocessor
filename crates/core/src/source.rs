@@ -24,6 +24,8 @@ pub struct Table {
     /// per (line, column). Lets the checks catch an ID that lands on a
     /// different real heading.
     pub headings: HashMap<(usize, String), Vec<String>>,
+    /// Set when only part of the sheet is used (`subset`): what was picked.
+    pub subset: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +115,7 @@ pub fn parse(source: &str, bytes: &[u8], aliases: &HashMap<String, String>) -> R
         cells_repaired: repaired,
         notes: Vec::new(),
         headings: HashMap::new(),
+        subset: None,
     })
 }
 

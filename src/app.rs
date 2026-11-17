@@ -39,6 +39,7 @@ pub fn main(cli: Cli) -> Result<()> {
             collection_title: cli.collection_title.clone(),
             accept_suggestions: cli.accept_suggestions,
             files_by_identifier: cli.files_by_identifier,
+            only: cli.only.clone(),
         })?;
         if let Some(tui::Outcome::Ingest { cfg, dir }) = outcome {
             return run::run_bundle(&cfg, &dir, false);
@@ -54,9 +55,13 @@ pub fn main(cli: Cli) -> Result<()> {
         confirm_typed(&site_name, &site_cfg.host)?;
     }
 
-    let table = source::load_for(&input, cli.sheet.as_deref(), &cfg)
+    let mut table = source::load_for(&input, cli.sheet.as_deref(), &cfg)
         .with_context(|| format!("reading {input}"))?;
     println!("Read {} row(s) from {input}", table.rows.len());
+    if let Some(subset) = organise::sacda::subset::Subset::parse(cli.only.as_deref().unwrap_or(""))? {
+        let items = subset.apply(&mut table)?;
+        println!("Only {}: {items} item(s), {} row(s)", subset.describe(), table.rows.len());
+    }
     let mut session = Session::new(
         cfg.clone(),
         &input,

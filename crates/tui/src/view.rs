@@ -216,6 +216,9 @@ fn header(f: &mut Frame, app: &App, area: Rect) {
         let e = r.report.count(Severity::Error);
         let w = r.report.count(Severity::Warning);
         spans.push(Span::raw(format!("   {}", short(&r.input_name, 40))));
+        if let Some(sub) = app.subset_for(&r.input_name) {
+            spans.push(Span::styled(format!("  only {}", sub.describe()), Style::new().fg(Color::Yellow).bold()));
+        }
         spans.push(Span::raw("   "));
         spans.push(Span::styled(format!("{e} error(s)"), if e > 0 { sev_style(Severity::Error) } else { Style::new().fg(Color::Green) }));
         spans.push(Span::raw("  "));
@@ -255,7 +258,7 @@ fn footer(app: &App) -> Line<'static> {
     }
     match &app.screen {
         Screen::Pick => {
-            let mut k = vec![("↑↓", "sheet"), ("←→", "site"), ("Enter", "check"), ("u", "add Google Sheets link"), ("f", "files folder"), ("m", "file names")];
+            let mut k = vec![("↑↓", "sheet"), ("←→", "site"), ("Enter", "check"), ("u", "add Google Sheets link"), ("f", "files folder"), ("m", "file names"), ("s", "rows")];
             if app.selected_input().is_some_and(|s| sacda::source::is_url(&s)) {
                 k.push(("x", "remove link"));
             }
@@ -404,6 +407,16 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
             "  the file column; rows without one use <identifier>.<ext>"
         },
         Style::new().fg(ACCENT),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::raw("Rows "), Span::styled("(s to change):", Style::new().fg(Color::DarkGray))]));
+    let subset = selected.as_deref().and_then(|s| app.subset_for(s));
+    lines.push(Line::from(Span::styled(
+        match &subset {
+            Some(s) => format!("  only {} (+ their collection/series rows)", s.describe()),
+            None => "  the whole sheet".to_string(),
+        },
+        if subset.is_some() { Style::new().fg(Color::Yellow).bold() } else { Style::new().fg(ACCENT) },
     )));
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::bordered().title(" Where ")), cols[1]);
 }
@@ -807,6 +820,11 @@ fn input_popup(f: &mut Frame, app: &App, area: Rect) {
             "Folder with the access files - type it, or drag the folder into this window. Empty = `access` next to the sheet:".to_string(),
             b,
         ),
+        Input::Subset(b) => (
+            " Rows to use ",
+            "Like PDF pages, by sheet row: 12  |  12,15  |  -40  |  100-  |  12-40. Or an identifier (2024_19_1545). Empty = the whole sheet:".to_string(),
+            b,
+        ),
         Input::Confirm(b) => (
             " Confirm ",
             format!("This writes to {}. Type '{}' to continue:", app.site(), app.site()),
@@ -831,6 +849,12 @@ fn input_popup(f: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(Color::Green),
             )),
             None => Line::from(Span::styled("✗ not a Google Sheets link yet (docs.google.com/spreadsheets/d/...)", Style::new().fg(Color::Yellow))),
+        },
+        Input::Subset(b) if b.trim().is_empty() => Line::from(Span::styled("Enter = the whole sheet", Style::new().fg(Color::DarkGray))),
+        Input::Subset(b) => match sacda::subset::Subset::parse(b) {
+            Ok(Some(s)) => Line::from(Span::styled(format!("✓ {} - Enter to use it", s.describe()), Style::new().fg(Color::Green))),
+            Ok(None) => Line::from(""),
+            Err(e) => Line::from(Span::styled(format!("✗ {e:#}"), Style::new().fg(Color::Yellow))),
         },
         Input::Folder(b) if b.trim().is_empty() => Line::from(Span::styled("Enter = use `access` next to the sheet", Style::new().fg(Color::DarkGray))),
         Input::Folder(b) => {

@@ -106,6 +106,10 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
     // Which bundle each row lands in decides which field definitions apply.
     let mut row_bundle: Vec<Option<&'static str>> = vec![None; table.rows.len()];
     for n in report.tree.nodes.values() {
+        // Already on the site: the row isn't ingested, so its terms don't matter.
+        if report.on_site_items.contains(&n.id) || report.attach.contains_key(&n.id) {
+            continue;
+        }
         if let Some(r) = n.row {
             row_bundle[r] = Some(if n.kind == Kind::Item { "islandora_object" } else { "archival_component" });
         }

@@ -177,6 +177,8 @@ pub struct Report {
     pub attach: HashMap<String, NodeRef>,
     /// Columns that go nowhere (unknown and not renamed).
     pub dropped_columns: Vec<String>,
+    /// Items already on the site (by identifier): left out of the bundle.
+    pub on_site_items: std::collections::HashSet<String>,
     /// Files in the access folder that no row uses.
     pub unmatched_files: Vec<std::path::PathBuf>,
     /// Unmatched files that could become items of their own: (identifier
