@@ -152,6 +152,57 @@ pub fn pull(url: &str, cfg: &Config) -> Result<Pulled> {
     Ok(Pulled { url: url.trim().to_string(), label: label_of(&table, cfg), rows: table.rows.len(), span: span_of(&table), path })
 }
 
+/// Temporary files organise keeps: downloaded sheets and the id.loc.gov
+/// lookup cache. Never bundles, logs, rollback files or the id map - those
+/// record what was ingested.
+#[derive(Debug, Clone)]
+pub struct TempFiles {
+    pub label: &'static str,
+    pub path: PathBuf,
+    pub files: usize,
+    pub bytes: u64,
+}
+
+pub fn temp_files() -> Vec<TempFiles> {
+    let Some(dir) = crate::authority::cache_dir() else { return vec![] };
+    let mut out = Vec::new();
+    let sheets = dir.join("sheets");
+    let (mut files, mut bytes) = (0, 0);
+    for e in fs::read_dir(&sheets).into_iter().flatten().flatten() {
+        if let Some(m) = e.metadata().ok().filter(|m| m.is_file()) {
+            files += 1;
+            bytes += m.len();
+        }
+    }
+    out.push(TempFiles { label: "downloaded Google Sheets", path: sheets, files, bytes });
+    let lc = dir.join("authority-cache-v2.json");
+    let bytes = fs::metadata(&lc).map(|m| m.len()).unwrap_or(0);
+    out.push(TempFiles { label: "id.loc.gov lookup cache", path: lc, files: usize::from(bytes > 0), bytes });
+    out
+}
+
+/// Delete what `temp_files` lists. Returns how many files went.
+pub fn clear_temp() -> Result<usize> {
+    let mut n = 0;
+    for t in temp_files() {
+        if t.files == 0 {
+            continue;
+        }
+        if t.path.is_dir() {
+            for e in fs::read_dir(&t.path)?.flatten() {
+                if e.path().is_file() {
+                    fs::remove_file(e.path())?;
+                    n += 1;
+                }
+            }
+        } else if t.path.is_file() {
+            fs::remove_file(&t.path)?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// "2024_19 Chandra Bodalia fonds": the first identifier's collection part
 /// and the sheet's most common collection title.
 pub fn label_of(table: &source::Table, cfg: &Config) -> String {

@@ -258,7 +258,7 @@ fn footer(app: &App) -> Line<'static> {
     }
     match &app.screen {
         Screen::Pick => {
-            let mut k = vec![("↑↓", "sheet"), ("←→", "site"), ("Enter", "check"), ("u", "add Google Sheets link"), ("f", "files folder"), ("m", "file names"), ("s", "rows")];
+            let mut k = vec![("↑↓", "sheet"), ("←→", "site"), ("Enter", "check"), ("u", "add Google Sheets link"), ("f", "files folder"), ("m", "file names"), ("s", "rows"), ("c", "clean temp files")];
             if app.selected_input().is_some_and(|s| sacda::source::is_url(&s)) {
                 k.push(("x", "remove link"));
             }
@@ -278,6 +278,7 @@ fn footer(app: &App) -> Line<'static> {
                 let c_label = if r.changes > 0 { "re-check (needed)" } else { "re-check" };
                 k.push(("c", c_label));
                 k.push(("r", "re-read sheet"));
+                k.push(("s", "rows"));
             }
             if ready {
                 k.push(("w", "write"));
@@ -811,9 +812,47 @@ fn written(f: &mut Frame, summary: &[String], dir: &std::path::Path, area: Rect)
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::bordered().title(" Done ")), area);
 }
 
+fn clean_popup(f: &mut Frame, area: Rect) {
+    let items = sacda::sheets::temp_files();
+    let size = |b: u64| if b >= 1_000_000 { format!("{:.1} MB", b as f64 / 1e6) } else { format!("{} KB", b.div_ceil(1000)) };
+    let mut lines = vec![Line::from("Delete organise's temporary files?"), Line::from("")];
+    for t in &items {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<26}", t.label), Style::new().bold()),
+            Span::raw(format!("{} file(s), {}", t.files, size(t.bytes))),
+        ]));
+        lines.push(Line::from(Span::styled(format!("    {}", t.path.display()), Style::new().fg(Color::DarkGray))));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Sheets are downloaded again when opened; the lookup cache only makes checks faster.",
+        Style::new().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "Bundles, logs, rollback files and the id map are kept - they record what was ingested.",
+        Style::new().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" Enter ", Style::new().fg(Color::Black).bg(Color::Yellow)),
+        Span::raw(" delete   "),
+        Span::styled(" Esc ", Style::new().fg(Color::Black).bg(ACCENT)),
+        Span::raw(" keep them"),
+    ]));
+    let w = area.width.saturating_sub(6).min(100);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height.saturating_sub(h) / 3, w, h);
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" Temporary files ").border_style(Style::new().fg(Color::Yellow))),
+        rect,
+    );
+}
+
 fn input_popup(f: &mut Frame, app: &App, area: Rect) {
     let (title, prompt, buf) = match &app.input {
         Input::None => return,
+        Input::Clean => return clean_popup(f, area),
         Input::Url(b) => (" Google Sheets link ", "Paste the sheet's link (shared as 'anyone with the link can view'):".to_string(), b),
         Input::Folder(b) => (
             " Files folder ",

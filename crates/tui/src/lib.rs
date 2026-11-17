@@ -85,6 +85,8 @@ pub enum Input {
     Folder(String),
     /// Typing which rows to use (page-style: 12-40, 57, 100-).
     Subset(String),
+    /// Confirming the temp files clean-up (Enter = delete).
+    Clean,
     /// Typing the site name to confirm a protected site.
     Confirm(String),
     /// Typing a title for a collection nobody described.
@@ -198,6 +200,8 @@ enum Done {
         session: Box<Session>,
         settled: Settled,
         table: Option<Table>,
+        /// Decisions moved onto the re-read sheet's rows.
+        decisions: Option<(Vec<Fix>, Vec<Fix>)>,
         cancelled: bool,
     },
 }
@@ -224,6 +228,8 @@ pub struct App {
     pub sheets: Sheets,
     /// The link pulled just now (highlighted in the list).
     pub just_pulled: Option<String>,
+    /// Rows were changed (`s`) while a check ran: re-read once it's done.
+    pub reread_after_job: bool,
     pub pick_offset: Cell<usize>,
     count_tx: mpsc::Sender<(PathBuf, Option<usize>)>,
     count_rx: mpsc::Receiver<(PathBuf, Option<usize>)>,
@@ -391,6 +397,7 @@ impl App {
             default_by_identifier: start.files_by_identifier,
             sheets: Sheets::load(),
             just_pulled: None,
+            reread_after_job: false,
             pick_offset: Cell::new(0),
             count_tx,
             count_rx,
@@ -626,6 +633,9 @@ impl App {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let run = || -> Result<Done, String> {
+                let mut accepted = accepted;
+                let mut rejected = rejected;
+                let mut decisions = None;
                 let (mut session, table) = match (reload, old) {
                     (false, Some(s)) => (s, None),
                     _ => {
@@ -634,6 +644,10 @@ impl App {
                         if let Some(s) = &subset {
                             s.apply(&mut t).map_err(|e| format!("{e:#}"))?;
                         }
+                        // Row numbers in the decisions point into the old reading.
+                        accepted = sacda::precheck::remap_rows(&accepted, &original, &t);
+                        rejected = sacda::precheck::remap_rows(&rejected, &original, &t);
+                        decisions = Some((accepted.clone(), rejected.clone()));
                         (Session::new(cfg, &input, opts).map_err(|e| format!("{e:#}"))?, Some(t))
                     }
                 };
@@ -642,7 +656,7 @@ impl App {
                 let settled = session.settle(base, &accepted, &rejected);
                 let cancelled = p.cancelled();
                 session.job = Default::default();
-                Ok(Done::Rechecked { session: Box::new(session), settled, table, cancelled })
+                Ok(Done::Rechecked { session: Box::new(session), settled, table, decisions, cancelled })
             };
             let _ = tx.send(run());
         });
@@ -717,7 +731,7 @@ impl App {
                 self.screen = Screen::Review(Box::new(review));
                 self.status.clear();
             }
-            Ok(Done::Rechecked { session, settled, table, cancelled }) => {
+            Ok(Done::Rechecked { session, settled, table, decisions, cancelled }) => {
                 self.session = Some(*session);
                 if cancelled {
                     self.status = "Re-check cancelled - showing the last full check".into();
@@ -728,6 +742,10 @@ impl App {
                 let (fixed, report, applied) = settled;
                 if let Some(t) = table {
                     r.original = t;
+                }
+                if let Some((a, rj)) = decisions {
+                    r.accepted = a;
+                    r.rejected = rj;
                 }
                 r.fixed = fixed;
                 r.report = report;
@@ -859,6 +877,12 @@ fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
 
     loop {
         app.poll_job();
+        if app.reread_after_job && app.job.is_none() {
+            app.reread_after_job = false;
+            if matches!(app.screen, Screen::Review(_)) {
+                app.start_recheck(true);
+            }
+        }
         app.poll_counts();
         term.draw(|f| view::draw(f, app))?;
         // Tick while something runs so the spinner, progress and counts move.
@@ -897,6 +921,7 @@ fn paste(app: &mut App, text: &str) {
     let one_line: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
     match &mut app.input {
         Input::Url(b) | Input::Folder(b) | Input::Subset(b) | Input::Confirm(b) | Input::Title { buf: b, .. } => b.push_str(one_line.trim()),
+        Input::Clean => {}
         Input::None => {
             // A link pasted straight onto the pick screen: open the box with it.
             if matches!(app.screen, Screen::Pick) && sheet_id(&one_line).is_some() {
@@ -1003,6 +1028,21 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
     // Text input takes every key until Enter/Esc.
     match &mut app.input {
         Input::None => {}
+        Input::Clean => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    app.status = match sacda::sheets::clear_temp() {
+                        Ok(0) => "Nothing to clean".into(),
+                        Ok(n) => format!("Deleted {n} temporary file(s)"),
+                        Err(e) => format!("Clean-up stopped: {e:#}"),
+                    };
+                    app.input = Input::None;
+                }
+                KeyCode::Esc | KeyCode::Char('n') => app.input = Input::None,
+                _ => {}
+            }
+            return Ok(Flow::Continue);
+        }
         Input::Url(buf) | Input::Folder(buf) | Input::Subset(buf) | Input::Confirm(buf) | Input::Title { buf, .. } => {
             match key.code {
                 KeyCode::Esc => {
@@ -1048,16 +1088,31 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                                 }
                             }
                         }
+                        Input::Clean => {}
                         Input::Subset(raw) => {
-                            let Some(sel) = app.selected_input() else { return Ok(Flow::Continue) };
+                            // On the review screen it's the open sheet, and it's re-read straight away.
+                            let reviewing = match &app.screen {
+                                Screen::Review(r) => Some(r.input_name.clone()),
+                                _ => None,
+                            };
+                            let Some(sel) = reviewing.clone().or_else(|| app.selected_input()) else { return Ok(Flow::Continue) };
                             match sacda::subset::Subset::parse(&raw) {
                                 Ok(s) => {
                                     app.status = match &s {
                                         Some(s) => format!("Only {} - Enter to check", s.describe()),
                                         None => "The whole sheet".into(),
                                     };
+                                    let changed = app.sheets.get(&sel).map(|s| s.subset.as_str()) != Some(raw.trim());
                                     app.sheets.entry(&sel).subset = raw.trim().to_string();
                                     app.sheets.save();
+                                    if reviewing.is_some() && changed {
+                                        if app.job.is_some() {
+                                            app.reread_after_job = true;
+                                            app.status = "Rows saved - the sheet is re-read with them when this check finishes".into();
+                                        } else {
+                                            app.start_recheck(true);
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     app.status = format!("{e:#}");
@@ -1141,6 +1196,7 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                     }
                     None => app.status = "Pick a sheet first, or paste a link with u".into(),
                 },
+                KeyCode::Char('c') => app.input = Input::Clean,
                 KeyCode::Char('s') => match app.selected_input() {
                     Some(sel) => {
                         let now = app.sheets.get(&sel).map(|s| s.subset.clone()).unwrap_or_default();
@@ -1199,6 +1255,8 @@ enum Action {
     Write { ingest: bool },
     /// A message for the status line.
     Say(String),
+    /// Change which rows are used, then re-read.
+    Subset,
 }
 
 fn review_key(r: &mut Review, key: KeyEvent) -> Action {
@@ -1319,6 +1377,7 @@ fn review_key(r: &mut Review, key: KeyEvent) -> Action {
         ),
         KeyCode::Char('c') => Action::Recheck,
         KeyCode::Char('r') => Action::Reload,
+        KeyCode::Char('s') => Action::Subset,
         KeyCode::Char('w') => Action::Write { ingest: false },
         KeyCode::Char('i') => Action::Write { ingest: true },
         _ => Action::None,
@@ -1340,6 +1399,12 @@ fn perform(app: &mut App, term: &mut Term, action: Action) -> Result<Flow> {
             app.status.clear();
         }
         Action::Recheck => app.start_recheck(false),
+        Action::Subset => {
+            if let Screen::Review(r) = &app.screen {
+                let now = app.sheets.get(&r.input_name).map(|s| s.subset.clone()).unwrap_or_default();
+                app.input = Input::Subset(now);
+            }
+        }
         Action::Reload => {
             // Re-read the sheet and drop cached site lookups - e.g. after
             // editing the sheet or ingesting the thesaurus terms.

@@ -453,6 +453,46 @@ impl Session {
     }
 }
 
+/// Decisions made on one reading of a sheet, moved onto another (re-read,
+/// or a different subset). A cell fix follows its row by identifier (and,
+/// for an item's extra file rows, which of them it was), so rows inserted or
+/// deleted in the sheet don't move a fix onto another item. A fix whose row
+/// is gone is dropped.
+pub fn remap_rows(fixes: &[Fix], from: &Table, to: &Table) -> Vec<Fix> {
+    // (identifier, nth row with it) -> row index; by line when there's no identifier column.
+    let keys = |t: &Table| -> Vec<(String, usize)> {
+        let col = crate::tree::ID_COLUMNS.iter().find_map(|c| t.col(c));
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        t.rows
+            .iter()
+            .map(|r| match col {
+                Some(c) => {
+                    let id = r.cells.get(c).map(|v| v.trim().to_string()).unwrap_or_default();
+                    let n = seen.entry(id.clone()).or_insert(0);
+                    *n += 1;
+                    (id, *n)
+                }
+                None => (String::new(), r.line),
+            })
+            .collect()
+    };
+    let (from_keys, to_keys) = (keys(from), keys(to));
+    fixes
+        .iter()
+        .filter_map(|f| match f {
+            Fix::SetCell { row, column, value } => {
+                let key = from_keys.get(*row)?;
+                if key.0.is_empty() && from.col(crate::tree::ID_COLUMNS[0]).is_some() {
+                    return None; // a row without an identifier can't be followed
+                }
+                let row = to_keys.iter().position(|k| k == key)?;
+                Some(Fix::SetCell { row, column: column.clone(), value: value.clone() })
+            }
+            other => Some(other.clone()),
+        })
+        .collect()
+}
+
 pub fn apply(table: &mut Table, titles: &mut HashMap<String, String>, fix: &Fix) {
     match fix {
         Fix::SetCell { row, column, value } => {
@@ -485,5 +525,34 @@ pub fn apply(table: &mut Table, titles: &mut HashMap<String, String>, fix: &Fix)
         }
         // Decided when the bundle is written.
         Fix::FileGap(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+    use crate::source::Row;
+
+    fn t(ids: &[&str]) -> Table {
+        Table {
+            source: "t".into(),
+            headers: vec!["accessIdentifier".into(), "x".into()],
+            rows: ids.iter().enumerate().map(|(i, id)| Row { line: i + 2, cells: vec![id.to_string(), String::new()] }).collect(),
+            renamed: vec![],
+            cells_repaired: 0,
+            notes: vec![],
+            headings: Default::default(),
+            subset: None,
+        }
+    }
+
+    #[test]
+    fn fixes_follow_identifiers_not_row_numbers() {
+        let before = t(&["a_1", "a_2", "a_3"]);
+        // A row inserted above, and a_1 deleted.
+        let after = t(&["a_0", "a_2", "a_3"]);
+        let set = |row| Fix::SetCell { row, column: "x".into(), value: "v".into() };
+        let moved = remap_rows(&[set(0), set(1), set(2)], &before, &after);
+        assert_eq!(moved, vec![set(1), set(2)]); // a_1's fix dropped, a_2 and a_3 stay theirs
     }
 }
