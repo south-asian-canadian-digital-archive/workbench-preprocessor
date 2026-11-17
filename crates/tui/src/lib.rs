@@ -23,8 +23,9 @@ use sacda::bundle;
 use sacda::config::Config;
 use sacda::precheck::{Fix, Options, Report, Session, Severity};
 use sacda::progress::Progress;
+use sacda::sheets::{Pulled, Sheets};
 use sacda::source::{self, Table};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io::Stdout;
 use std::path::{Path, PathBuf};
@@ -103,6 +104,10 @@ pub struct Review {
     /// New terms created without their authority link: (vocabulary, name).
     pub no_link: HashSet<(String, String)>,
     pub term_sel: usize,
+    /// First visible row of each list, kept between draws so scrolling back up
+    /// moves the selection, not the view.
+    pub list_offset: Cell<usize>,
+    pub term_offset: Cell<usize>,
 }
 
 impl Review {
@@ -177,6 +182,7 @@ pub struct Job {
 }
 
 enum Done {
+    Pulled(Pulled),
     Opened {
         input: String,
         table: Table,
@@ -206,18 +212,33 @@ pub struct App {
     pub session: Option<Session>,
     pub confirmed_site: Option<String>,
     pub job: Option<Job>,
-    /// Folder the access files are in (None: `access` next to the sheet).
-    pub access_dir: Option<PathBuf>,
-    /// Ignore the `file` column and name access files after their identifier.
-    pub files_by_identifier: bool,
+    /// `--access-dir`: the files folder for a sheet that hasn't got its own.
+    pub default_dir: Option<PathBuf>,
+    /// `--files-by-identifier`, for sheets without their own setting.
+    pub default_by_identifier: bool,
+    /// Google Sheets history and each sheet's files folder / file-name mode.
+    pub sheets: Sheets,
+    /// The link pulled just now (highlighted in the list).
+    pub just_pulled: Option<String>,
+    pub pick_offset: Cell<usize>,
+    count_tx: mpsc::Sender<(PathBuf, Option<usize>)>,
+    count_rx: mpsc::Receiver<(PathBuf, Option<usize>)>,
     start: Start,
     pending_input: Option<String>,
     /// Clickable areas from the last draw (the view fills it in).
     pub hits: RefCell<Vec<(Rect, Hit)>>,
     /// Links drawn on screen; `Hit::Link(i)` opens `links[i]`.
     pub links: RefCell<Vec<String>>,
-    /// File counts per access folder, for the pick screen.
-    pub folder_counts: RefCell<HashMap<PathBuf, Option<usize>>>,
+    /// File counts per access folder, for the pick screen (None while counting -
+    /// on a network share that takes a while, so it's never done on this thread).
+    pub folder_counts: RefCell<HashMap<PathBuf, Option<Option<usize>>>>,
+}
+
+/// One line of the pick list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickRow {
+    Header(&'static str),
+    Sheet(String),
 }
 
 /// What a mouse click on a drawn area means.
@@ -346,6 +367,7 @@ impl App {
         let want = start.site.clone().unwrap_or_else(|| cfg.sacda.default_site.clone());
         let site_idx = sites.iter().position(|s| *s == want).unwrap_or(0);
         let cwd = std::env::current_dir().unwrap_or_default();
+        let (count_tx, count_rx) = mpsc::channel();
         Self {
             cfg,
             sites,
@@ -361,8 +383,13 @@ impl App {
             session: None,
             confirmed_site: None,
             job: None,
-            access_dir: start.access_dir.clone(),
-            files_by_identifier: start.files_by_identifier,
+            default_dir: start.access_dir.clone(),
+            default_by_identifier: start.files_by_identifier,
+            sheets: Sheets::load(),
+            just_pulled: None,
+            pick_offset: Cell::new(0),
+            count_tx,
+            count_rx,
             pending_input: start.input.clone(),
             start,
         }
@@ -377,9 +404,74 @@ impl App {
             && self.confirmed_site.as_deref() != Some(self.site())
     }
 
+    /// The pick list: Google Sheets links first, then sheets in this folder.
+    pub fn pick_rows(&self) -> Vec<PickRow> {
+        let mut rows = Vec::new();
+        let links = self.sheets.links();
+        if !links.is_empty() {
+            rows.push(PickRow::Header("Google Sheets"));
+            rows.extend(links.iter().map(|s| PickRow::Sheet(s.input.clone())));
+        }
+        if !self.files.is_empty() {
+            rows.push(PickRow::Header("Spreadsheets in this folder"));
+            rows.extend(self.files.iter().map(|p| PickRow::Sheet(p.to_string_lossy().to_string())));
+        }
+        rows
+    }
+
+    /// The sheet under the cursor on the pick screen.
+    pub fn selected_input(&self) -> Option<String> {
+        match self.pick_rows().get(self.pick_sel) {
+            Some(PickRow::Sheet(s)) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// Move the pick cursor by `d`, skipping section headers.
+    fn pick_move(&mut self, d: isize) {
+        let rows = self.pick_rows();
+        let mut i = self.pick_sel as isize;
+        loop {
+            i += d.signum();
+            if i < 0 || i as usize >= rows.len() {
+                return;
+            }
+            if matches!(rows[i as usize], PickRow::Sheet(_)) {
+                self.pick_sel = i as usize;
+                if d.abs() <= 1 {
+                    return;
+                }
+                return self.pick_move(d - d.signum());
+            }
+        }
+    }
+
+    fn select_input(&mut self, input: &str) {
+        if let Some(i) = self.pick_rows().iter().position(|r| *r == PickRow::Sheet(input.to_string())) {
+            self.pick_sel = i;
+        }
+    }
+
+    /// First sheet row, so the cursor never starts on a header.
+    fn pick_first(&mut self) {
+        if let Some(i) = self.pick_rows().iter().position(|r| matches!(r, PickRow::Sheet(_))) {
+            self.pick_sel = i;
+        }
+    }
+
+    pub fn by_identifier(&self, input: Option<&str>) -> bool {
+        input
+            .and_then(|i| self.sheets.get(i))
+            .map(|s| s.files_by_identifier)
+            .unwrap_or(self.default_by_identifier)
+    }
+
     /// The access folder a sheet would use, and whether it was chosen by hand.
     pub fn access_for(&self, input: Option<&str>) -> (PathBuf, bool) {
-        if let Some(d) = &self.access_dir {
+        if let Some(d) = input.and_then(|i| self.sheets.get(i)).and_then(|s| s.folder.clone()) {
+            return (d, true);
+        }
+        if let Some(d) = &self.default_dir {
             return (d.clone(), true);
         }
         let base = match input {
@@ -393,8 +485,33 @@ impl App {
         (base.join(&self.cfg.sacda.ingest.access_dir), false)
     }
 
-    pub fn folder_count(&self, dir: &Path) -> Option<usize> {
-        *self.folder_counts.borrow_mut().entry(dir.to_path_buf()).or_insert_with(|| count_files(dir))
+    /// Files in `dir`: Some(Some(n)), Some(None) if it isn't a folder, None
+    /// while it's still being counted (on a worker).
+    pub fn folder_count(&self, dir: &Path) -> Option<Option<usize>> {
+        let mut c = self.folder_counts.borrow_mut();
+        if let Some(v) = c.get(dir) {
+            return *v;
+        }
+        c.insert(dir.to_path_buf(), None);
+        let (tx, d) = (self.count_tx.clone(), dir.to_path_buf());
+        std::thread::spawn(move || {
+            let n = count_files(&d);
+            let _ = tx.send((d, n));
+        });
+        None
+    }
+
+    fn poll_counts(&mut self) -> bool {
+        let mut got = false;
+        while let Ok((d, n)) = self.count_rx.try_recv() {
+            self.folder_counts.borrow_mut().insert(d, Some(n));
+            got = true;
+        }
+        got
+    }
+
+    fn counting(&self) -> bool {
+        self.folder_counts.borrow().values().any(Option::is_none)
     }
 
     fn options(&self, input: &str) -> Options {
@@ -403,12 +520,39 @@ impl App {
             access_dir: Some(self.access_for(Some(input)).0),
             collection_title: self.start.collection_title.clone(),
             offline: false,
-            files_by_identifier: self.files_by_identifier,
+            files_by_identifier: self.by_identifier(Some(input)),
         }
+    }
+
+    /// Download a pasted link and add it to the list (no check yet - pick
+    /// its files folder first, then Enter).
+    fn start_pull(&mut self, url: String) {
+        let cfg = self.cfg.clone();
+        let progress = Arc::new(Progress::default());
+        let p = progress.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            p.say("downloading from Google");
+            let _ = tx.send(sacda::sheets::pull(&url, &cfg).map(Done::Pulled).map_err(|e| format!("{e:#}")));
+        });
+        self.job = Some(Job {
+            label: "Pulling the Google Sheet".into(),
+            progress,
+            started: Instant::now(),
+            rx,
+            changes_at_start: 0,
+            cancelling: false,
+            detachable: true,
+        });
+        self.status.clear();
     }
 
     /// Load a sheet and run the first check on the worker.
     fn start_open(&mut self, input: String) {
+        if source::is_url(&input) {
+            self.sheets.entry(&input).used = sacda::sheets::now();
+            self.sheets.save();
+        }
         let cfg = self.cfg.clone();
         let sheet = self.start.sheet.clone();
         let opts = self.options(&input);
@@ -520,6 +664,16 @@ impl App {
         match got {
             Err(e) if e == "cancelled" => self.status = "Cancelled".into(),
             Err(e) => self.status = e,
+            Ok(Done::Pulled(p)) => {
+                self.sheets.remember(&p);
+                self.sheets.save();
+                self.just_pulled = Some(p.url.clone());
+                self.select_input(&p.url);
+                self.status = format!(
+                    "Pulled \"{}\" ({} rows). Set its files folder with f (and m for file names), then Enter to check it.",
+                    p.label, p.rows
+                );
+            }
             Ok(Done::Opened { input, table, session, settled, accepted }) => {
                 let (fixed, report, applied) = settled;
                 let mut review = Review {
@@ -537,6 +691,8 @@ impl App {
                     changes: 0,
                     no_link: HashSet::new(),
                     term_sel: 0,
+                    list_offset: Cell::new(0),
+                    term_offset: Cell::new(0),
                 };
                 rebuild_entries(&mut review);
                 self.session = Some(*session);
@@ -654,6 +810,7 @@ fn busy(app: &mut App, term: &mut Term, msg: &str) -> Result<()> {
 }
 
 fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
+    app.pick_first();
     // A sheet given on the command line skips the pick screen.
     if let Some(input) = app.pending_input.take() {
         if app.needs_confirm() {
@@ -666,9 +823,11 @@ fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
 
     loop {
         app.poll_job();
+        app.poll_counts();
         term.draw(|f| view::draw(f, app))?;
-        // Tick while a job runs so the spinner and its progress move.
-        if !event::poll(Duration::from_millis(if app.job.is_some() { 120 } else { 1000 }))? {
+        // Tick while something runs so the spinner, progress and counts move.
+        let ticking = app.job.is_some() || app.counting();
+        if !event::poll(Duration::from_millis(if ticking { 120 } else { 1000 }))? {
             continue;
         }
         let key = match event::read()? {
@@ -757,7 +916,7 @@ fn mouse(app: &mut App, m: MouseEvent) -> Option<KeyEvent> {
         }
         Hit::PickList { offset } => {
             let i = offset + row;
-            if i >= app.files.len() || app.job.is_some() {
+            if app.job.is_some() || !matches!(app.pick_rows().get(i), Some(PickRow::Sheet(_))) {
                 return None;
             }
             if app.pick_sel == i {
@@ -829,23 +988,24 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                                 // Keep the box open with what they typed.
                                 app.status = "That isn't a Google Sheets link (docs.google.com/spreadsheets/d/...)".into();
                                 app.input = Input::Url(url);
-                            } else if app.needs_confirm() {
-                                app.pending_input = Some(url);
-                                app.input = Input::Confirm(String::new());
                             } else {
-                                app.start_open(url);
+                                // Pull it into the list first; checking is Enter on it.
+                                app.start_pull(url);
                             }
                         }
                         Input::Folder(raw) => {
+                            let Some(sel) = app.selected_input() else { return Ok(Flow::Continue) };
                             if raw.trim().is_empty() {
-                                app.access_dir = None;
-                                app.status = "Files folder: back to `access` next to the sheet".into();
+                                app.sheets.entry(&sel).folder = None;
+                                app.sheets.save();
+                                app.status = "Files folder: back to the default".into();
                             } else {
                                 let p = clean_path(&raw);
                                 if p.is_dir() {
                                     let p = std::fs::canonicalize(&p).unwrap_or(p);
-                                    app.status = format!("Files folder: {}", p.display());
-                                    app.access_dir = Some(p);
+                                    app.status = format!("Files folder for this sheet: {}", p.display());
+                                    app.sheets.entry(&sel).folder = Some(p);
+                                    app.sheets.save();
                                 } else {
                                     app.status = format!("{} isn't a folder", p.display());
                                     app.input = Input::Folder(raw);
@@ -898,30 +1058,51 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
             }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(Flow::Quit),
-                KeyCode::Up | KeyCode::Char('k') => app.pick_sel = app.pick_sel.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    app.pick_sel = (app.pick_sel + 1).min(app.files.len().saturating_sub(1))
+                KeyCode::Up | KeyCode::Char('k') => app.pick_move(-1),
+                KeyCode::Down | KeyCode::Char('j') => app.pick_move(1),
+                KeyCode::PageUp => app.pick_move(-10),
+                KeyCode::PageDown => app.pick_move(10),
+                KeyCode::Char('x') => {
+                    if let Some(sel) = app.selected_input().filter(|s| source::is_url(s)) {
+                        app.sheets.remove(&sel);
+                        app.sheets.save();
+                        app.status = "Removed the link from the list".into();
+                        app.pick_sel = app.pick_sel.min(app.pick_rows().len().saturating_sub(1));
+                        if app.selected_input().is_none() {
+                            app.pick_move(-1);
+                            if app.selected_input().is_none() {
+                                app.pick_first();
+                            }
+                        }
+                    }
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
                     app.site_idx = (app.site_idx + app.sites.len() - 1) % app.sites.len()
                 }
                 KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => app.site_idx = (app.site_idx + 1) % app.sites.len(),
                 KeyCode::Char('u') => app.input = Input::Url(String::new()),
-                KeyCode::Char('f') => {
-                    let now = app.access_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-                    app.input = Input::Folder(now);
-                }
-                KeyCode::Char('m') => {
-                    app.files_by_identifier = !app.files_by_identifier;
-                    app.status = if app.files_by_identifier {
-                        "File names: <identifier>.<ext> for every item - the file column is ignored".into()
-                    } else {
-                        "File names: from the file column; rows without one use <identifier>.<ext>".into()
-                    };
-                }
+                KeyCode::Char('f') => match app.selected_input() {
+                    Some(sel) => {
+                        let now = app.sheets.get(&sel).and_then(|s| s.folder.as_ref()).map(|p| p.display().to_string());
+                        app.input = Input::Folder(now.unwrap_or_default());
+                    }
+                    None => app.status = "Pick a sheet first, or paste a link with u".into(),
+                },
+                KeyCode::Char('m') => match app.selected_input() {
+                    Some(sel) => {
+                        let on = !app.by_identifier(Some(&sel));
+                        app.sheets.entry(&sel).files_by_identifier = on;
+                        app.sheets.save();
+                        app.status = if on {
+                            "File names: <identifier>.<ext> for every item - the file column is ignored".into()
+                        } else {
+                            "File names: from the file column; rows without one use <identifier>.<ext>".into()
+                        };
+                    }
+                    None => app.status = "Pick a sheet first, or paste a link with u".into(),
+                },
                 KeyCode::Enter => {
-                    if let Some(p) = app.files.get(app.pick_sel) {
-                        let p = p.to_string_lossy().to_string();
+                    if let Some(p) = app.selected_input() {
                         if app.needs_confirm() {
                             app.pending_input = Some(p);
                             app.input = Input::Confirm(String::new());
@@ -1035,9 +1216,7 @@ fn review_key(r: &mut Review, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Char(c @ (' ' | 'y' | 'n')) if r.tab == Tab::Findings => {
-            if decide(r, c) {
-                r.changes += 1;
-            }
+            r.changes += decide(r, c);
             Action::None
         }
         KeyCode::Char('a') if r.tab == Tab::Findings => {
@@ -1135,8 +1314,68 @@ fn perform(app: &mut App, term: &mut Term, action: Action) -> Result<Flow> {
     Ok(Flow::Continue)
 }
 
-/// y / n / Space on the selected entry. Returns whether anything changed.
-fn decide(r: &mut Review, key: char) -> bool {
+/// The same suggestion on other rows: same value, same existing term.
+pub fn same_suggestion(r: &Review, i: usize) -> Vec<usize> {
+    let Some(h) = r.report.findings.get(i).and_then(|f| f.hint.as_ref()) else { return vec![i] };
+    r.report
+        .findings
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| {
+            f.fix.is_some()
+                && f.hint.as_ref().is_some_and(|o| o.typed == h.typed && o.existing == h.existing && o.vocab == h.vocab)
+        })
+        .map(|(j, _)| j)
+        .collect()
+}
+
+/// y / n / Space on the selected entry - and, for a term suggestion, on every
+/// row with the same suggestion. Returns how many fixes changed.
+fn decide(r: &mut Review, key: char) -> usize {
+    let Some(entry) = r.entries.get(r.sel).cloned() else { return 0 };
+    let targets = match entry {
+        Entry::Finding(i) => same_suggestion(r, i),
+        Entry::Applied(_) => vec![],
+    };
+    if targets.len() > 1 {
+        // Decide them together from the selected one's state.
+        let Entry::Finding(i) = entry else { return 0 };
+        let f = &r.report.findings[i];
+        let now = r.choice(f.fix.as_ref().unwrap(), f.auto);
+        let want = match key {
+            'y' => Choice::On,
+            'n' => Choice::Off,
+            _ if now == Choice::On => Choice::Off,
+            _ => Choice::On,
+        };
+        let mut changed = 0;
+        for j in targets {
+            let f = &r.report.findings[j];
+            let (fix, auto) = (f.fix.clone().unwrap(), f.auto);
+            if set_choice(r, &fix, auto, want) {
+                changed += 1;
+            }
+        }
+        return changed;
+    }
+    decide_one(r, key) as usize
+}
+
+fn set_choice(r: &mut Review, fix: &Fix, auto: bool, want: Choice) -> bool {
+    if r.choice(fix, auto) == want {
+        return false;
+    }
+    r.accepted.retain(|x| x != fix);
+    r.rejected.retain(|x| x != fix);
+    match want {
+        Choice::On if !auto => r.accepted.push(fix.clone()),
+        Choice::Off => r.rejected.push(fix.clone()),
+        _ => {}
+    }
+    true
+}
+
+fn decide_one(r: &mut Review, key: char) -> bool {
     let Some(entry) = r.entries.get(r.sel).cloned() else { return false };
     let (fix, auto, now) = match &entry {
         Entry::Finding(i) => {

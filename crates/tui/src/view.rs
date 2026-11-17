@@ -1,7 +1,7 @@
 //! Drawing. Pure functions of `App` - no state changes here, apart from
 //! recording where the clickable things ended up.
 
-use super::{sheet_id, App, Choice, Entry, Hit, Input, Review, Screen, Tab};
+use super::{same_suggestion, sheet_id, App, Choice, Entry, Hit, Input, PickRow, Review, Screen, Tab};
 use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -156,15 +156,14 @@ fn footer(app: &App) -> Line<'static> {
         return keys(&[("Esc", "cancel"), ("q", "quit")]);
     }
     match &app.screen {
-        Screen::Pick => keys(&[
-            ("↑↓", "sheet"),
-            ("←→", "site"),
-            ("Enter", "check"),
-            ("u", "Google Sheets link"),
-            ("f", "files folder"),
-            ("m", "file names"),
-            ("q", "quit"),
-        ]),
+        Screen::Pick => {
+            let mut k = vec![("↑↓", "sheet"), ("←→", "site"), ("Enter", "check"), ("u", "add Google Sheets link"), ("f", "files folder"), ("m", "file names")];
+            if app.selected_input().is_some_and(|s| sacda::source::is_url(&s)) {
+                k.push(("x", "remove link"));
+            }
+            k.push(("q", "quit"));
+            keys(&k)
+        }
         Screen::Review(r) => {
             let ready = app.job.is_none() && r.not_ready().is_none();
             let mut k: Vec<(&str, &str)> = match r.tab {
@@ -199,23 +198,50 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
     let cwd = std::env::current_dir().unwrap_or_default();
-    let items: Vec<ListItem> = if app.files.is_empty() {
-        vec![ListItem::new("No spreadsheets here. Press u to paste a Google Sheets link, or run organise from the folder that has the sheet.")]
+    let rows = app.pick_rows();
+    let items: Vec<ListItem> = if rows.is_empty() {
+        vec![ListItem::new("No spreadsheets yet. Press u to paste a Google Sheets link, or run organise from the folder that has the sheet.")]
     } else {
-        app.files
-            .iter()
-            .map(|p| ListItem::new(p.strip_prefix(&cwd).unwrap_or(p).display().to_string()))
+        rows.iter()
+            .map(|r| match r {
+                PickRow::Header(h) => ListItem::new(Line::from(Span::styled(format!("── {h} "), Style::new().fg(ACCENT).bold()))),
+                PickRow::Sheet(input) if sacda::source::is_url(input) => {
+                    let e = app.sheets.get(input);
+                    let label = e.map(|e| e.label.clone()).filter(|l| !l.is_empty()).unwrap_or_else(|| "Google Sheet".into());
+                    let rows = e.map(|e| e.rows).unwrap_or(0);
+                    let fresh = app.just_pulled.as_deref() == Some(input.as_str());
+                    let mut spans = vec![Span::styled(label, if fresh { Style::new().fg(Color::Green).bold() } else { Style::new().bold() })];
+                    let span = e.map(|e| e.span.clone()).unwrap_or_default();
+                    spans.push(Span::styled(
+                        format!("  {rows} rows{}", if span.is_empty() { String::new() } else { format!(", {span}") }),
+                        Style::new().fg(Color::DarkGray),
+                    ));
+                    if fresh {
+                        spans.push(Span::styled("  ● just pulled", Style::new().fg(Color::Black).bg(Color::Green)));
+                    }
+                    let id = sheet_id(input).unwrap_or("");
+                    spans.push(Span::styled(format!("  …{}", &id[id.len().saturating_sub(8)..]), Style::new().fg(Color::DarkGray)));
+                    ListItem::new(Line::from(spans))
+                }
+                PickRow::Sheet(input) => {
+                    let p = std::path::Path::new(input);
+                    ListItem::new(p.strip_prefix(&cwd).unwrap_or(p).display().to_string())
+                }
+            })
             .collect()
     };
-    let mut state = ListState::default().with_selected(Some(app.pick_sel));
+    let mut state = ListState::default()
+        .with_offset(app.pick_offset.get())
+        .with_selected((!rows.is_empty()).then_some(app.pick_sel));
     f.render_stateful_widget(
         List::new(items)
-            .block(Block::bordered().title(" Spreadsheet "))
+            .block(Block::bordered().title(" Sheets "))
             .highlight_style(Style::new().bg(Color::DarkGray).bold())
             .highlight_symbol("> "),
         cols[0],
         &mut state,
     );
+    app.pick_offset.set(state.offset());
     app.hits.borrow_mut().push((inner(cols[0]), Hit::PickList { offset: state.offset() }));
 
     // Site lines start two rows into the "Where" box.
@@ -238,19 +264,35 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    // Files folder for the selected sheet (or a link).
-    let selected = app.files.get(app.pick_sel).map(|p| p.to_string_lossy().to_string());
+    // Files folder for the selected sheet (or link).
+    let selected = app.selected_input();
+    lines.push(Line::from(""));
+    match &selected {
+        Some(sel) => {
+            let name = if sacda::source::is_url(sel) {
+                app.sheets.get(sel).map(|e| e.label.clone()).unwrap_or_else(|| "this Google Sheet".into())
+            } else {
+                std::path::Path::new(sel).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+            };
+            lines.push(Line::from(vec![Span::raw("For "), Span::styled(name, Style::new().bold()), Span::raw(":")]));
+        }
+        None => lines.push(Line::from(Span::styled("Pick a sheet, or paste a link with u", Style::new().fg(Color::DarkGray)))),
+    }
     let (dir, chosen) = app.access_for(selected.as_deref());
     let count = app.folder_count(&dir);
-    lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::raw("Files folder "), Span::styled("(f to change):", Style::new().fg(Color::DarkGray))]));
     lines.push(Line::from(Span::styled(format!("  {}", dir.display()), Style::new().fg(ACCENT))));
+    let where_from = if chosen {
+        ""
+    } else if selected.as_deref().is_some_and(sacda::source::is_url) {
+        " - `access` in the folder organise was started from"
+    } else {
+        " - `access` next to the sheet"
+    };
     lines.push(match count {
-        Some(n) => Line::from(Span::styled(
-            format!("  {n} file(s){}", if chosen { "" } else { " - `access` next to the sheet" }),
-            Style::new().fg(Color::Green),
-        )),
-        None => Line::from(Span::styled(
+        None => Line::from(Span::styled("  counting files ...", Style::new().fg(Color::DarkGray))),
+        Some(Some(n)) => Line::from(Span::styled(format!("  {n} file(s){where_from}"), Style::new().fg(Color::Green))),
+        Some(None) => Line::from(Span::styled(
             "  not found - press f and type or drop the folder in",
             Style::new().fg(Color::Yellow),
         )),
@@ -258,7 +300,7 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::raw("File names "), Span::styled("(m to change):", Style::new().fg(Color::DarkGray))]));
     lines.push(Line::from(Span::styled(
-        if app.files_by_identifier {
+        if app.by_identifier(selected.as_deref()) {
             "  <identifier>.<ext> for every item (file column ignored)"
         } else {
             "  the file column; rows without one use <identifier>.<ext>"
@@ -349,7 +391,9 @@ fn findings(f: &mut Frame, app: &App, r: &Review, area: Rect) {
             }
         })
         .collect();
-    let mut state = ListState::default().with_selected(if r.entries.is_empty() { None } else { Some(r.sel) });
+    let mut state = ListState::default()
+        .with_offset(r.list_offset.get())
+        .with_selected(if r.entries.is_empty() { None } else { Some(r.sel) });
     f.render_stateful_widget(
         List::new(items)
             .block(Block::bordered().title(" Precheck "))
@@ -358,6 +402,7 @@ fn findings(f: &mut Frame, app: &App, r: &Review, area: Rect) {
         cols[0],
         &mut state,
     );
+    r.list_offset.set(state.offset());
     // "> " highlight column + "[x] " box = the first 6 cells toggle.
     app.hits.borrow_mut().push((inner(cols[0]), Hit::Findings { offset: state.offset(), check_cols: 6 }));
     detail(f, app, r, cols[1]);
@@ -403,6 +448,14 @@ fn detail(f: &mut Frame, app: &App, r: &Review, area: Rect) {
                         Span::styled(if h.tid.is_empty() { String::new() } else { format!("  (term {})", h.tid) }, Style::new().fg(Color::DarkGray)),
                     ]));
                     text.push_line(Line::from(vec![Span::raw("Why it's suggested: "), Span::styled(h.why.clone(), Style::new().fg(Color::Yellow))]));
+                    let same = same_suggestion(r, *i).len();
+                    if same > 1 {
+                        text.push_line("");
+                        text.push_line(Span::styled(
+                            format!("Your choice applies to all {same} rows with \"{}\" -> \"{}\".", h.typed, h.existing),
+                            Style::new().fg(ACCENT),
+                        ));
+                    }
                     buttons.push(('y', format!("Use the existing term \"{}\"", h.existing), c == Choice::On));
                     buttons.push((
                         'n',
@@ -596,7 +649,9 @@ fn terms(f: &mut Frame, app: &App, r: &Review, area: Rect) {
             })
             .collect()
     };
-    let mut state = ListState::default().with_selected(if rows.is_empty() { None } else { Some(r.term_sel) });
+    let mut state = ListState::default()
+        .with_offset(r.term_offset.get())
+        .with_selected(if rows.is_empty() { None } else { Some(r.term_sel) });
     f.render_stateful_widget(
         List::new(items)
             .block(Block::bordered().title(" New terms - created by a terms job before the ingest "))
@@ -605,6 +660,7 @@ fn terms(f: &mut Frame, app: &App, r: &Review, area: Rect) {
         parts[0],
         &mut state,
     );
+    r.term_offset.set(state.offset());
     app.hits.borrow_mut().push((inner(parts[0]), Hit::Terms { offset: state.offset(), check_cols: 6 }));
     let help = vec![
         Line::from(Span::styled(

@@ -30,18 +30,23 @@ Re-run it to update. From source: `cargo build --release`.
 
 ### The screen
 
-- **Pick:** a sheet found under the current folder, or `u` to paste a Google Sheets link (it's checked as you
-  paste; Esc cancels a check that's taking too long). `f` sets the folder the access files are in - type it or
-  drag the folder into the window; the panel shows how many files it holds. `m` switches file names between "the
-  `file` column, else `<identifier>.<ext>`" and "always `<identifier>.<ext>`" (SACDA staging; also
-  `--files-by-identifier`).
+- **Pick:** `u` pastes a Google Sheets link. It's downloaded straight away and added to a **Google Sheets**
+  section at the top of the list (marked "just pulled"), with the collection name, row count and identifier range
+  so batches of one fonds can be told apart. Links stay there between runs (`x` removes one); below them are the
+  spreadsheets in the current folder.
+- **Each sheet has its own files folder and file-name rule**, remembered between runs (`sheets.json` next to
+  organise's settings file): select it, `f` to set the folder (type it, or drag the folder into the window; the
+  panel shows how many files it holds - counted in the background), `m` to switch file names between "the `file`
+  column, else `<identifier>.<ext>`" and "always `<identifier>.<ext>`" (SACDA staging; also
+  `--files-by-identifier`). Then Enter checks it (a link is downloaded fresh for the check).
 - **Checks run in the background.** The status line shows what's being fetched; you can read and decide findings
   while it runs, and Esc cancels it.
 - **Each suggestion is a decision:** `y` uses the fix, `n` keeps the sheet's value (for a term: add it as a new
   term, or - in a vocabulary ingests can't add to - leave the error). The detail pane says what the sheet has,
   which existing term it's close to (with its term number and a link to it on the site), and why: a spelling
   mistake (n letters), singular/plural, accents/case, word order. `[?]` = not decided yet, `[✓]` on, `[–]` off.
-  `a` uses every undecided suggestion.
+  A choice on a term suggestion applies to every row with the same value and the same suggested term (52 rows of
+  "Masjid" -> "Masjids" is one keypress). `a` uses every undecided suggestion.
 - **Nothing is re-checked until you press `c`.** Write (`w`) and write+ingest (`i`) only appear once the last
   check covers every decision, nothing is undecided and there are no errors. `r` re-reads the sheet and the site
   (after editing the sheet, or ingesting thesaurus terms).

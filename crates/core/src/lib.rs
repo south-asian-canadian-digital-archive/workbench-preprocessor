@@ -11,6 +11,7 @@
 //! - `bundle`     write CSVs + configs + manifest
 //! - `run`        drive Workbench over a bundle
 //! - `doctor`     machine + site health check
+//! - `sheets`     Google Sheets history + per-sheet settings (files folder)
 //! - `progress`   progress + cancel handle for a check running elsewhere
 
 pub mod authority;
@@ -21,6 +22,7 @@ pub mod edtf;
 pub mod precheck;
 pub mod progress;
 pub mod run;
+pub mod sheets;
 pub mod site;
 pub mod source;
 pub mod suggest;
