@@ -39,10 +39,18 @@ Re-run it to update. From source: `cargo build --release`.
   panel shows how many files it holds - counted in the background), `m` to switch file names between "the `file`
   column, else `<identifier>.<ext>`" and "always `<identifier>.<ext>`" (SACDA staging; also
   `--files-by-identifier`). Then Enter checks it (a link is downloaded fresh for the check).
-- **Checks run in the background.** The status line shows what's being fetched; you can read and decide findings
-  while it runs, and Esc cancels it.
+- **Checks run in the background.** Pulling a sheet and its first check show a progress dialog (step, a bar when
+  it knows how far along it is, time so far; Esc or its button cancels). Re-checks stay in the status line, so you
+  can keep reading and deciding findings while one runs.
+- **Rows and files that don't pair up are decisions too**, each listing exactly which rows (row number and
+  identifier) or files: rows with no file, rows naming a file the folder doesn't have, and files no row uses.
+  `y` leaves them out of the ingest and lists them in the bundle (`skipped-rows.csv` - the full sheet rows plus why
+  - or `unmatched-files.csv`) to sort out later; `n` ingests them anyway (without media / without the missing file /
+  each unused file as its own item titled by its identifier, offered when every such file is named after an
+  identifier whose parent is known). `--plain` leaves them out unless `--keep-unpaired`.
 - **Each suggestion is a decision:** `y` uses the fix, `n` keeps the sheet's value (for a term: add it as a new
-  term, or - in a vocabulary ingests can't add to - leave the error). The detail pane says what the sheet has,
+  term). In a vocabulary listed in Workbench's `protected_vocabularies` (`config/templates/common.yml`) there's no
+  `n`: the pane says why, and the value has to be the existing term or fixed in the sheet. The detail pane says what the sheet has,
   which existing term it's close to (with its term number and a link to it on the site), and why: a spelling
   mistake (n letters), singular/plural, accents/case, word order. `[?]` = not decided yet, `[✓]` on, `[–]` off.
   A choice on a term suggestion applies to every row with the same value and the same suggested term (52 rows of
@@ -88,13 +96,13 @@ Re-run it to update. From source: `cargo build --release`.
      to archival_component collections
    - columns: unknown columns get a "did you mean" from `suggest.rs` (case, `_`, missing `field_`, typos, plurals)
    - structure: identifiers valid, titles present, nothing already on the site
-   - files: in the access folder (`access/` next to the sheet, or the one chosen with `f` / `--access-dir`), extension accepted by the site's media types,
+   - files: rows and files pair up (see above), in the access folder (`access/` next to the sheet, or the one chosen with `f` / `--access-dir`), extension accepted by the site's media types,
      no derivatives
    - dates: EDTF, with fixes for what people actually type (`05/1978`, `1970s`, `c. 1975`, `1975-1979`, `May 1979`)
    - terms: every value matched to the site's vocabularies (by name, or by authority URI); near misses suggested;
      new terms get their LCSH / LC name link (exact heading lookup, or the heading for an `sh...`/`n...` identifier
-     in the sheet); protected vocabularies and the SACDA Thesaurus are never added to - a missing thesaurus term
-     blocks the run until the thesaurus job has run
+     in the sheet); vocabularies in Workbench's `protected_vocabularies` are never added to. New terms without a
+     link are a note, not a warning - most SACDA terms have none
 4. **Fixes.** Safe ones (EDTF, capitalisation, identifier -> heading) are on; guesses (typos) are offered and off
    until accepted (`y` / `a` on the screen, `--accept-suggestions`). Fixes change the bundle, never the sheet.
    Failed id.loc.gov lookups (throttling) aren't retried within a run, so a re-check takes about a second;
@@ -108,7 +116,9 @@ Re-run it to update. From source: `cargo build --release`.
 
 - `config/sacda.toml` - sites (dev `isle.dvnl.work`, test `sacda-test.ufv.ca`, prod `sacda.ufv.ca`, which asks
   for confirmation), ingest defaults, and per-field rules: which vocabulary a new term goes to, relators,
-  authorities, `never_create`.
+  authorities.
+- `config/templates/common.yml` - also holds Workbench's `protected_vocabularies`. organise reads the same list:
+  a misspelt value in one of those can only be fixed in the sheet, not kept as a new term.
 - `config/schema.toml` - generated from the site's `config/sync` by `scripts/gen_schema.py`: fields per content type,
   required flags, target vocabularies, media types and their extensions.
 - `config/templates/*.yml` - the Workbench configs organise renders.

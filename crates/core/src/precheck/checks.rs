@@ -1,11 +1,11 @@
 //! The non-vocabulary checks: site, columns, structure, files, dates.
 
-use super::{Finding, Fix, Report, Session, Severity::*};
+use super::{Finding, Fix, Gap, Report, Session, Severity::*};
 use crate::edtf;
 use crate::site::{Login, JSONAPI_HELP};
 use crate::source::Table;
 use crate::suggest;
-use crate::tree::{media_for_extension, Kind, ID_COLUMNS};
+use crate::tree::{media_for_extension, parent_of, valid_identifier, Kind, ID_COLUMNS};
 
 /// Columns organise itself understands; not Drupal fields.
 pub const RESERVED: &[&str] = &[
@@ -320,6 +320,21 @@ pub fn structure(s: &mut Session, table: &Table, report: &mut Report) {
     }
 }
 
+/// "row 12 (2024_19_1_001), row 14 (...)" - every one, so the screen shows
+/// exactly which. Line 0 = not a row (a file name on its own).
+fn row_list(items: &[(usize, String)]) -> String {
+    const MAX: usize = 60;
+    let mut v: Vec<String> = items
+        .iter()
+        .take(MAX)
+        .map(|(l, what)| if *l == 0 { what.clone() } else { format!("row {l} ({what})") })
+        .collect();
+    if items.len() > MAX {
+        v.push(format!("and {} more", items.len() - MAX));
+    }
+    v.join(", ")
+}
+
 /// Names that look like derivatives Islandora makes itself.
 fn looks_like_derivative(name: &str) -> bool {
     let n = name.to_lowercase();
@@ -341,39 +356,126 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
         return;
     }
     let mut out = Vec::new();
-    let bare: Vec<String> = report
+    let line_of = |n: &crate::tree::Node| n.row.map(|r| table.rows[r].line).unwrap_or(0);
+
+    // Item rows with no file at all.
+    let bare: Vec<(usize, String)> = report
         .tree
         .of_kind(Kind::Item)
         .filter(|n| n.files.is_empty())
-        .map(|n| n.id.clone())
+        .map(|n| (line_of(n), n.id.clone()))
         .collect();
     if !bare.is_empty() {
-        let shown = bare.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
-        let more = if bare.len() > 5 { format!(" and {} more", bare.len() - 5) } else { String::new() };
         let where_ = if s.files.exists {
             format!("in {}", s.files.root.display())
         } else {
-            format!("- the access folder {} doesn't exist (stage the files there, or pass --access-dir)", s.files.root.display())
+            format!("- the access folder {} doesn't exist", s.files.root.display())
         };
-        out.push(Finding::new(
-            Warning,
-            "files",
-            format!(
-                "{} item(s) have no file {where_}: {shown}{more}. They'd be created without media (model {}); files are looked up by accessIdentifier (e.g. {}.tif) or the `file` column",
-                bare.len(),
-                s.cfg.sacda.ingest.no_file_model,
-                bare[0]
-            ),
-        ));
+        out.push(
+            Finding::new(
+                Warning,
+                "files",
+                format!(
+                    "{} row(s) have no file {where_} (looked up by the `file` column, or <identifier>.<ext>): {}. \
+                     Leave them out (y - listed in {} in the bundle to sort out later), or ingest them without media \
+                     (n - model {}).",
+                    bare.len(),
+                    row_list(&bare),
+                    Gap::NoFile.csv(),
+                    s.cfg.sacda.ingest.no_file_model,
+                ),
+            )
+            .with_fix(Fix::FileGap(Gap::NoFile), false),
+        );
     }
+
+    // Rows that name a file the folder doesn't have.
+    let missing: Vec<(usize, String)> = report
+        .tree
+        .of_kind(Kind::Item)
+        .flat_map(|n| n.files.iter().filter(|f| f.path.is_none()).map(move |f| (table.rows[f.row].line, format!("{} wants '{}'", n.id, f.wanted))))
+        .collect();
+    if s.files.exists && !missing.is_empty() {
+        out.push(
+            Finding::new(
+                Warning,
+                "files",
+                format!(
+                    "{} row(s) name a file that isn't in {}: {}. Leave those rows out (y - listed in {} in the bundle), \
+                     or ingest them without the missing file (n).",
+                    missing.len(),
+                    s.files.root.display(),
+                    row_list(&missing),
+                    Gap::MissingFile.csv(),
+                ),
+            )
+            .with_fix(Fix::FileGap(Gap::MissingFile), false),
+        );
+    }
+
+    // Files no row uses.
+    if s.files.exists {
+        let used: std::collections::HashSet<&std::path::Path> = report
+            .tree
+            .of_kind(Kind::Item)
+            .flat_map(|n| n.files.iter().filter_map(|f| f.path.as_deref()))
+            .collect();
+        let unmatched: Vec<std::path::PathBuf> =
+            s.files.all().into_iter().filter(|p| !used.contains(p.as_path()) && !looks_like_derivative(&p.to_string_lossy())).collect();
+        if !unmatched.is_empty() {
+            // They can be items of their own when each is named after an
+            // identifier whose parent the sheet or the site already has.
+            let stubs: Vec<(String, String)> = unmatched
+                .iter()
+                .filter_map(|p| {
+                    let id = p.file_stem()?.to_string_lossy().to_string();
+                    let parent = parent_of(&id)?;
+                    let known = report.tree.nodes.get(&parent).is_some_and(|n| n.kind != Kind::Item) || report.attach.contains_key(&parent);
+                    (valid_identifier(&id) && known && !report.tree.nodes.contains_key(&id)).then_some((id, parent))
+                })
+                .collect();
+            let can_add = stubs.len() == unmatched.len();
+            let root = std::fs::canonicalize(&s.files.root).unwrap_or(s.files.root.clone());
+            let names: Vec<(usize, String)> = unmatched
+                .iter()
+                .map(|p| (0, p.strip_prefix(&root).unwrap_or(p).to_string_lossy().to_string()))
+                .collect();
+            let mut f = Finding::new(
+                Warning,
+                "files",
+                format!(
+                    "{} file(s) in the folder aren't used by any row: {}. {}",
+                    unmatched.len(),
+                    row_list(&names),
+                    if can_add {
+                        format!(
+                            "Leave them out (y - listed in {}), or add each as an item titled by its identifier (n).",
+                            Gap::Unmatched.csv()
+                        )
+                    } else {
+                        format!("They're left out and listed in {} in the bundle.", Gap::Unmatched.csv())
+                    }
+                ),
+            );
+            if can_add {
+                f = f.with_fix(Fix::FileGap(Gap::Unmatched), false);
+                report.stub_items = stubs;
+            }
+            out.push(f);
+            report.unmatched_files = unmatched;
+        }
+    }
+
     for node in report.tree.of_kind(Kind::Item) {
         for f in &node.files {
             let line = table.rows[f.row].line;
             if f.path.is_none() {
-                out.push(
-                    Finding::new(Error, "files", format!("file '{}' isn't in the access folder", f.wanted))
-                        .at(line, node.id.clone()),
-                );
+                if !s.files.exists {
+                    out.push(
+                        Finding::new(Error, "files", format!("file '{}' isn't in the access folder", f.wanted))
+                            .at(line, node.id.clone()),
+                    );
+                }
                 continue;
             }
             let limit = s

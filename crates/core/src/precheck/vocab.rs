@@ -13,20 +13,14 @@ use crate::suggest;
 use crate::tree::Kind;
 use std::collections::BTreeMap;
 
-/// Vocabularies an ingest may never add to.
-const PROTECTED: &[&str] = &[
-    "islandora_models",
-    "islandora_display",
-    "islandora_media_use",
-    "archival_levels",
-    "issuance_modes",
-    "resource_types",
-    "physical_form",
-    "genre",
-    "copyright",
-    "terms_of_use",
-    "concerns_corrections",
-];
+/// Why a vocabulary takes no new terms, for the message and the screen.
+pub fn locked_reason(vocab: &str) -> String {
+    format!(
+        "{vocab} is in protected_vocabularies ({}), so an ingest can't add terms to it - Workbench would stop on it too.",
+        crate::config::PROTECTED_SOURCE
+    )
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Val {
@@ -121,7 +115,6 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
     }
 
     let mut new_terms: BTreeMap<String, Vec<NewTerm>> = BTreeMap::new();
-    let mut thesaurus_missing: BTreeMap<String, Vec<usize>> = BTreeMap::new();
 
     for col in table.headers.clone() {
         for (i, row) in table.rows.iter().enumerate() {
@@ -292,8 +285,8 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                         .new_term_vocab(&col, &site_cfg)
                         .unwrap_or_else(|| def.targets.first().cloned().unwrap_or_default()),
                 };
-                let is_thesaurus = col == "field_sacda_thesaurus";
-                let creatable = !rule.never_create && !PROTECTED.contains(&new_vocab.as_str()) && !is_thesaurus;
+                let locked = s.cfg.protected_vocabularies.contains(&new_vocab);
+                let creatable = !locked;
 
                 // A new term: find its authority link by heading if it has none yet.
                 // A heading the authority knows is deliberate, so no "did you mean".
@@ -333,7 +326,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                             if creatable {
                                 format!("Use \"{near_name}\", or keep \"{}\" as a new term.", p.name)
                             } else {
-                                format!("Use \"{near_name}\" - {new_vocab} can't get new terms from an ingest.")
+                                format!("Use \"{near_name}\" - {}", locked_reason(&new_vocab))
                             }
                         ),
                     )
@@ -355,14 +348,12 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 }
 
                 if !creatable {
-                    if is_thesaurus {
-                        thesaurus_missing.entry(p.name.clone()).or_default().push(row.line);
-                    } else if near.is_none() {
+                    if near.is_none() {
                         report.findings.push(
                             Finding::new(
                                 Error,
                                 "terms",
-                                format!("{col}: \"{}\" isn't in {new_vocab}, and ingests can't add to that vocabulary", p.name),
+                                format!("{col}: \"{}\" isn't in {new_vocab}. {}", p.name, locked_reason(&new_vocab)),
                             )
                             .at(row.line, id.clone()),
                         );
@@ -409,7 +400,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
         ));
         for t in terms.iter().filter(|t| t.link.is_none()) {
             let mut f = Finding::new(
-                Warning,
+                Info,
                 "terms",
                 format!("new {vocab} term \"{}\" has no authority link - it will be created with just a name", t.name),
             )
@@ -428,25 +419,6 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
             }
             report.findings.push(f);
         }
-    }
-    if !thesaurus_missing.is_empty() {
-        report.findings.push(Finding::new(
-            Error,
-            "terms",
-            format!(
-                "{} SACDA Thesaurus term(s) aren't on the site yet: {}. Ingest the thesaurus terms first (a separate \
-                 thesaurus job), then run this again.",
-                thesaurus_missing.len(),
-                thesaurus_missing
-                    .iter()
-                    .map(|(n, lines)| format!(
-                        "\"{n}\" (row {})",
-                        lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ")
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ));
     }
     report.new_terms = new_terms;
 }

@@ -54,11 +54,109 @@ pub fn draw(f: &mut Frame, app: &App) {
     let foot = footer(app);
     register_chips(app, &foot, rows[3]);
     f.render_widget(Paragraph::new(foot), rows[3]);
+    job_dialog(f, app, area);
     input_popup(f, app, area);
 }
 
+/// Jobs that hold up everything else (pulling a sheet, the first check)
+/// get a dialog in the middle; re-checks on the review screen stay in the
+/// status line so the findings can still be browsed.
+fn blocking(app: &App) -> bool {
+    app.job.is_some() && !matches!(app.screen, Screen::Review(_))
+}
+
+/// "row 120 of 400" in a progress message, as a fraction.
+fn row_fraction(msg: &str) -> Option<f64> {
+    let rest = &msg[msg.find("row ")? + 4..];
+    let (n, rest) = rest.split_once(" of ")?;
+    let total: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let (n, total) = (n.trim().parse::<f64>().ok()?, total.parse::<f64>().ok()?);
+    (total > 0.0).then(|| (n / total).clamp(0.0, 1.0))
+}
+
+fn job_dialog(f: &mut Frame, app: &App, area: Rect) {
+    let Some(job) = app.job.as_ref().filter(|_| blocking(app)) else { return };
+    let w = area.width.saturating_sub(6).min(76);
+    let h = 11.min(area.height);
+    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height.saturating_sub(h) / 2, w, h);
+    let inner = w.saturating_sub(2) as usize;
+
+    let elapsed = job.started.elapsed();
+    let spin = SPINNER[(elapsed.as_millis() / 100) as usize % SPINNER.len()];
+    let msg = job.progress.message();
+    // Kept to one line so the button stays where its click target is.
+    let mut step = if msg.is_empty() { "starting ...".to_string() } else { msg.clone() };
+    if step.chars().count() > inner {
+        step = step.chars().take(inner.saturating_sub(1)).collect::<String>() + "…";
+    }
+
+    // A real bar when the message says how far along it is, otherwise a
+    // block sliding back and forth so it's visibly still working.
+    let frac = row_fraction(&msg);
+    let bar_w = if frac.is_some() { inner.saturating_sub(5) } else { inner }.max(10);
+    let bar = match frac {
+        Some(frac) => {
+            let done = (frac * bar_w as f64).round() as usize;
+            Line::from(vec![
+                Span::styled("█".repeat(done), Style::new().fg(ACCENT)),
+                Span::styled("░".repeat(bar_w - done), Style::new().fg(Color::DarkGray)),
+                Span::raw(format!(" {:>3.0}%", frac * 100.0)),
+            ])
+        }
+        None => {
+            let block = 6.min(bar_w);
+            let span = bar_w - block;
+            let t = (elapsed.as_millis() / 60) as usize % (2 * span.max(1));
+            let at = if t > span { 2 * span - t } else { t };
+            Line::from(vec![
+                Span::styled("░".repeat(at), Style::new().fg(Color::DarkGray)),
+                Span::styled("█".repeat(block), Style::new().fg(ACCENT)),
+                Span::styled("░".repeat(span - at), Style::new().fg(Color::DarkGray)),
+            ])
+        }
+    };
+
+    let secs = elapsed.as_secs();
+    let took = if secs >= 60 { format!("{}m {:02}s", secs / 60, secs % 60) } else { format!("{secs}s") };
+    let sheet = app.selected_input().map(|s| super::short_name(&s)).filter(|s| !job.label.contains(s.as_str())).unwrap_or_default();
+    let cancel = if job.cancelling { " cancelling ... " } else { " Esc  cancel " };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("{spin} "), Style::new().fg(ACCENT).bold()),
+            Span::styled(job.label.clone(), Style::new().bold()),
+        ]),
+        Line::from(Span::styled(sheet, Style::new().fg(Color::DarkGray))),
+        Line::from(""),
+        Line::from(step),
+        Line::from(""),
+        bar,
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("{took} so far"), Style::new().fg(Color::DarkGray)),
+            Span::raw("   "),
+            Span::styled(cancel, Style::new().fg(Color::Black).bg(if job.cancelling { Color::DarkGray } else { Color::Yellow })),
+        ]),
+    ];
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().title(" Working ").border_style(Style::new().fg(ACCENT))),
+        rect,
+    );
+
+    // Only the cancel button is clickable while this is up.
+    let mut hits = app.hits.borrow_mut();
+    hits.clear();
+    let took_w = format!("{took} so far   ").chars().count() as u16;
+    let btn_y = rect.y + 1 + 7;
+    if btn_y < rect.bottom().saturating_sub(1) && !job.cancelling {
+        hits.push((Rect::new(rect.x + 1 + took_w, btn_y, cancel.chars().count() as u16, 1), Hit::Key(KeyCode::Esc)));
+    }
+}
+
 fn status_line(app: &App) -> Line<'static> {
-    if let Some(job) = &app.job {
+    if let Some(job) = app.job.as_ref().filter(|_| !blocking(app)) {
         let secs = job.started.elapsed().as_secs();
         let spin = SPINNER[(job.started.elapsed().as_millis() / 100) as usize % SPINNER.len()];
         let what = job.progress.message();
@@ -457,15 +555,31 @@ fn detail(f: &mut Frame, app: &App, r: &Review, area: Rect) {
                         ));
                     }
                     buttons.push(('y', format!("Use the existing term \"{}\"", h.existing), c == Choice::On));
-                    buttons.push((
-                        'n',
-                        if h.creatable {
-                            format!("Keep \"{}\" - add it as a new {} term", h.typed, h.vocab)
-                        } else {
-                            format!("Keep \"{}\" (stays an error - {} can't get new terms)", h.typed, h.vocab)
-                        },
-                        c == Choice::Off,
-                    ));
+                    if h.creatable {
+                        buttons.push(('n', format!("Keep \"{}\" - add it as a new {} term", h.typed, h.vocab), c == Choice::Off));
+                    } else {
+                        text.push_line("");
+                        text.push_line(Line::from(vec![
+                            Span::styled("Can't keep it: ", Style::new().fg(Color::Red).bold()),
+                            Span::raw(sacda::precheck::locked_reason(&h.vocab)),
+                        ]));
+                        text.push_line(Span::styled(
+                            "Use the existing term, or correct the sheet and re-read it (r).",
+                            Style::new().fg(Color::DarkGray),
+                        ));
+                    }
+                }
+                (None, Some(fix @ sacda::precheck::Fix::FileGap(g))) => {
+                    use sacda::precheck::Gap;
+                    let c = r.choice(fix, fd.auto);
+                    text.push_line(fd.message.clone());
+                    let keep = match g {
+                        Gap::NoFile => "Ingest anyway, no media".to_string(),
+                        Gap::MissingFile => "Ingest anyway, without the file".to_string(),
+                        Gap::Unmatched => "Add each as its own item".to_string(),
+                    };
+                    buttons.push(('y', format!("Leave out -> {}", g.csv()), c == Choice::On));
+                    buttons.push(('n', keep, c == Choice::Off));
                 }
                 (None, Some(fix)) => {
                     let c = r.choice(fix, fd.auto);

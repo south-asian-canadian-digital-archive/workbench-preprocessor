@@ -152,6 +152,14 @@ impl FileIndex {
         }
     }
 
+    /// Every file in the folder, once each.
+    pub fn all(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = self.by_name.values().flatten().cloned().collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     /// Find a file the sheet names. Paths are reduced to their file name -
     /// staged folders rarely match the sheet's idea of the layout. When two
     /// files share the name, prefer the one under a folder named `scope`.

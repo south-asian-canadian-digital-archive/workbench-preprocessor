@@ -143,6 +143,11 @@ pub struct Cli {
     #[arg(long)]
     pub accept_suggestions: bool,
 
+    /// Ingest rows without their files and files without rows anyway (default: leave them out and list them in
+    /// skipped-rows.csv / unmatched-files.csv in the bundle)
+    #[arg(long)]
+    pub keep_unpaired: bool,
+
     /// No interactive screen: print the report and write the bundle if it's clean
     #[arg(long)]
     pub plain: bool,

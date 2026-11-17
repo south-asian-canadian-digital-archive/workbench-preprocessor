@@ -4,7 +4,7 @@
 
 use super::config::{Config, FieldDef};
 use super::edtf;
-use super::precheck::{vocab_render, Fix, Report, Severity, Val};
+use super::precheck::{vocab_render, Fix, Gap, Report, Severity, Val};
 use super::source::Table;
 use super::tree::{Kind, Node};
 use anyhow::{bail, Context, Result};
@@ -34,6 +34,12 @@ pub struct Manifest {
     pub items: usize,
     pub files: usize,
     pub new_terms: usize,
+    /// Rows left out because their files didn't pair up (skipped-rows.csv).
+    #[serde(default)]
+    pub skipped_rows: usize,
+    /// Files no row used, left out (unmatched-files.csv).
+    #[serde(default)]
+    pub unmatched_files: usize,
     pub steps: Vec<Step>,
 }
 
@@ -234,7 +240,41 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
     w.write_record(&header)?;
     let mut n_items = 0;
     let mut n_files = 0;
+    // Rows and files that don't pair up: left out when that choice is on.
+    let gap_on = |g: Gap| applied.contains(&Fix::FileGap(g));
+    let mut skipped: Vec<(usize, String)> = Vec::new();
     for n in report.tree.of_kind(Kind::Item) {
+        let rows_of = |n: &Node| {
+            let mut r: Vec<usize> = n.row.into_iter().chain(n.files.iter().map(|f| f.row)).collect();
+            r.sort_unstable();
+            r.dedup();
+            r
+        };
+        let missing: Vec<&str> = n.files.iter().filter(|f| f.path.is_none()).map(|f| f.wanted.as_str()).collect();
+        if n.files.is_empty() && gap_on(Gap::NoFile) {
+            skipped.extend(rows_of(n).into_iter().map(|r| (r, "no file in the access folder".to_string())));
+            continue;
+        }
+        if !missing.is_empty() && gap_on(Gap::MissingFile) {
+            let why = format!("file not in the access folder: {}", missing.join(", "));
+            skipped.extend(rows_of(n).into_iter().map(|r| (r, why.clone())));
+            continue;
+        }
+        // Ingesting it anyway: without the files that aren't there.
+        let trimmed;
+        let n = if missing.is_empty() {
+            n
+        } else {
+            let mut t = n.clone();
+            t.files.retain(|f| f.path.is_some());
+            t.model = match t.files.as_slice() {
+                [] => cfg.sacda.ingest.no_file_model.clone(),
+                [one] => super::tree::media_for_extension(cfg, &one.extension).map(|(_, m)| m.to_string()).unwrap_or(t.model),
+                _ => t.model,
+            };
+            trimmed = t;
+            &trimmed
+        };
         n_items += 1;
         let (parent_id, member_of) = parent_link(report, n);
         let row = n.row.expect("items always come from a row");
@@ -293,7 +333,69 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
             }
         }
     }
+    // Files no row used, as items of their own - only when that was chosen.
+    let add_stubs = !report.stub_items.is_empty() && !gap_on(Gap::Unmatched);
+    if add_stubs {
+        let extra_cols = item_cols.len() + usize::from(!has_date_created && table.col("field_edtf_date").is_some());
+        for (id, parent) in &report.stub_items {
+            let Some(path) = report.unmatched_files.iter().find(|p| p.file_stem().is_some_and(|s| s.to_string_lossy() == *id)) else { continue };
+            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let model = super::tree::media_for_extension(cfg, &ext).map(|(_, m)| m.to_string()).unwrap_or_else(|| "Binary".into());
+            let stub = Node {
+                id: id.clone(),
+                parent: Some(parent.clone()),
+                kind: Kind::Item,
+                row: None,
+                title: id.clone(),
+                level: String::new(),
+                model: model.clone(),
+                files: vec![],
+            };
+            let (parent_id, member_of) = parent_link(report, &stub);
+            let mut rec = vec![
+                id.clone(),
+                parent_id,
+                member_of,
+                id.clone(),
+                id.clone(),
+                model,
+                path.to_string_lossy().to_string(),
+                String::new(),
+            ];
+            rec.extend(std::iter::repeat_n(String::new(), extra_cols));
+            w.write_record(&rec)?;
+            n_items += 1;
+            n_files += 1;
+        }
+    }
     w.flush()?;
+
+    // --- what was left out, to sort out later ---------------------------------
+    let _ = fs::remove_file(dir.join(Gap::NoFile.csv()));
+    let _ = fs::remove_file(dir.join(Gap::Unmatched.csv()));
+    if !skipped.is_empty() {
+        let mut w = csv::Writer::from_path(dir.join(Gap::NoFile.csv()))?;
+        let mut header = vec!["organise_reason".to_string(), "sheet_row".to_string()];
+        header.extend(table.headers.iter().cloned());
+        w.write_record(&header)?;
+        for (r, why) in &skipped {
+            let row = &table.rows[*r];
+            let mut rec = vec![why.clone(), row.line.to_string()];
+            rec.extend((0..table.headers.len()).map(|c| row.cells.get(c).cloned().unwrap_or_default()));
+            w.write_record(&rec)?;
+        }
+        w.flush()?;
+    }
+    let n_unmatched = if add_stubs { 0 } else { report.unmatched_files.len() };
+    if n_unmatched > 0 {
+        let mut w = csv::Writer::from_path(dir.join(Gap::Unmatched.csv()))?;
+        w.write_record(["file", "path", "organise_reason"])?;
+        for p in &report.unmatched_files {
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            w.write_record([name, p.to_string_lossy().to_string(), "no row in the sheet uses this file".to_string()])?;
+        }
+        w.flush()?;
+    }
 
     // --- terms-<vocab>.csv --------------------------------------------------
     let mut n_terms = 0;
@@ -386,6 +488,8 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
         items: n_items,
         files: n_files,
         new_terms: n_terms,
+        skipped_rows: skipped.iter().map(|(r, _)| *r).collect::<std::collections::BTreeSet<_>>().len(),
+        unmatched_files: n_unmatched,
         steps,
     };
     fs::write(dir.join("bundle.toml"), toml::to_string_pretty(&manifest)?)?;

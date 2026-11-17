@@ -747,9 +747,21 @@ impl App {
             format!("Site: {} ({})", m.site, m.host),
             format!("Collections: {}", m.collections.join(", ")),
             format!("{} component(s), {} item(s), {} file(s), {} new term(s)", m.components, m.items, m.files, m.new_terms),
+        ];
+        if m.skipped_rows > 0 {
+            summary.push(format!("Left out: {} row(s) - see {}", m.skipped_rows, w.dir.join(sacda::precheck::Gap::NoFile.csv()).display()));
+        }
+        if m.unmatched_files > 0 {
+            summary.push(format!(
+                "Left out: {} unused file(s) - see {}",
+                m.unmatched_files,
+                w.dir.join(sacda::precheck::Gap::Unmatched.csv()).display()
+            ));
+        }
+        summary.extend([
             String::new(),
             "Steps, in order:".into(),
-        ];
+        ]);
         for s in &m.steps {
             summary.push(format!(
                 "  {}{}",
@@ -1137,6 +1149,8 @@ enum Action {
     Open(Option<String>),
     Title(Option<String>),
     Write { ingest: bool },
+    /// A message for the status line.
+    Say(String),
 }
 
 fn review_key(r: &mut Review, key: KeyEvent) -> Action {
@@ -1216,6 +1230,9 @@ fn review_key(r: &mut Review, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Char(c @ (' ' | 'y' | 'n')) if r.tab == Tab::Findings => {
+            if let Some(h) = locked_hint(r).filter(|_| c == 'n' || (c == ' ' && selected_on(r))) {
+                return Action::Say(format!("\"{}\" can't be kept: {}", h.typed, sacda::precheck::locked_reason(&h.vocab)));
+            }
             r.changes += decide(r, c);
             Action::None
         }
@@ -1263,6 +1280,7 @@ fn review_key(r: &mut Review, key: KeyEvent) -> Action {
 fn perform(app: &mut App, term: &mut Term, action: Action) -> Result<Flow> {
     match action {
         Action::None => {}
+        Action::Say(m) => app.status = m,
         Action::Quit => return Ok(Flow::Quit),
         Action::Back => {
             if let Some(j) = &app.job {
@@ -1312,6 +1330,18 @@ fn perform(app: &mut App, term: &mut Term, action: Action) -> Result<Flow> {
         }
     }
     Ok(Flow::Continue)
+}
+
+/// The selected finding's term hint, when its vocabulary takes no new terms.
+fn locked_hint(r: &Review) -> Option<sacda::precheck::TermHint> {
+    let Some(Entry::Finding(i)) = r.entries.get(r.sel) else { return None };
+    r.report.findings.get(*i)?.hint.clone().filter(|h| !h.creatable)
+}
+
+fn selected_on(r: &Review) -> bool {
+    let Some(Entry::Finding(i)) = r.entries.get(r.sel) else { return false };
+    let f = &r.report.findings[*i];
+    f.fix.as_ref().is_some_and(|x| r.choice(x, f.auto) == Choice::On)
 }
 
 /// The same suggestion on other rows: same value, same existing term.

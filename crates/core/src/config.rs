@@ -85,8 +85,6 @@ pub struct FieldRule {
     pub vocab: Option<String>,
     pub relator: Option<String>,
     pub authority: Option<String>,
-    #[serde(default)]
-    pub never_create: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -202,6 +200,45 @@ pub struct Config {
     pub g_root: PathBuf,
     pub sacda: SacdaToml,
     pub schema: Schema,
+    /// Vocabularies an ingest may not add terms to: Workbench's
+    /// `protected_vocabularies`, read from config/templates/common.yml so
+    /// organise and Workbench go by the same list.
+    pub protected_vocabularies: Vec<String>,
+}
+
+/// Where `protected_vocabularies` is set.
+pub const PROTECTED_SOURCE: &str = "config/templates/common.yml";
+
+/// `protected_vocabularies` from a Workbench YAML config: either
+/// `key: [a, b]` or a block list of `- a` lines. None when it isn't set.
+pub fn yaml_list(text: &str, key: &str) -> Option<Vec<String>> {
+    let clean = |v: &str| v.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let line = line.split(" #").next().unwrap_or("");
+        let Some(rest) = line.strip_prefix(key).and_then(|r| r.trim_start().strip_prefix(':')) else { continue };
+        let rest = rest.trim();
+        if let Some(inner) = rest.strip_prefix('[') {
+            let inner = inner.trim_end().trim_end_matches(']');
+            return Some(inner.split(',').map(clean).filter(|v| !v.is_empty()).collect());
+        }
+        if !rest.is_empty() {
+            return Some(vec![clean(rest)]);
+        }
+        let mut out = Vec::new();
+        for l in lines.by_ref() {
+            let t = l.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            match t.strip_prefix("- ") {
+                Some(v) => out.push(clean(v.split(" #").next().unwrap_or(""))),
+                None => break,
+            }
+        }
+        return Some(out);
+    }
+    None
 }
 
 impl Config {
@@ -232,10 +269,16 @@ impl Config {
         if !sacda.sites.contains_key(&sacda.default_site) {
             bail!("default_site '{}' isn't one of the [sites]", sacda.default_site);
         }
+        let common = g_root.join(PROTECTED_SOURCE);
+        let protected_vocabularies = fs::read_to_string(&common)
+            .ok()
+            .and_then(|t| yaml_list(&t, "protected_vocabularies"))
+            .unwrap_or_default();
         Ok(Self {
             g_root: g_root.to_path_buf(),
             sacda,
             schema,
+            protected_vocabularies,
         })
     }
 
@@ -361,6 +404,26 @@ pub fn read_credentials(path: &Path) -> Result<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_protected_vocabularies() {
+        let block = "a: 1\nprotected_vocabularies:\n  # system\n  - genre\n  - 'resource_types'  # comment\nnext: x\n";
+        assert_eq!(yaml_list(block, "protected_vocabularies").unwrap(), ["genre", "resource_types"]);
+        let flow = "protected_vocabularies: [genre, \"copyright\"]\n";
+        assert_eq!(yaml_list(flow, "protected_vocabularies").unwrap(), ["genre", "copyright"]);
+        assert!(yaml_list("other: 1\n", "protected_vocabularies").is_none());
+    }
+
+    #[test]
+    fn g_template_lists_protected_vocabularies() {
+        let g = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+        if !is_g_root(&g) {
+            return;
+        }
+        let cfg = Config::load_from(&g).unwrap();
+        assert!(cfg.protected_vocabularies.iter().any(|v| v == "resource_types"));
+        assert!(!cfg.protected_vocabularies.iter().any(|v| v == "sacda_thesaurus"));
+    }
 
     #[test]
     fn loads_real_g_config() {

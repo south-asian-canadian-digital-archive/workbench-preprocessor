@@ -10,6 +10,7 @@
 
 pub(crate) mod checks;
 mod vocab;
+pub use vocab::locked_reason;
 
 pub use vocab::{render as vocab_render, NewTerm, Val};
 
@@ -44,6 +45,30 @@ pub enum Fix {
     RenameColumn { from: String, to: String },
     /// Title for a container nobody described in the sheet.
     SetTitle { id: String, title: String },
+    /// Rows and files that don't pair up. On = leave them out of the ingest
+    /// and list them in a CSV in the bundle; off = ingest them anyway.
+    FileGap(Gap),
+}
+
+/// The ways rows and access files can fail to pair up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Gap {
+    /// Item rows with no file at all.
+    NoFile,
+    /// Rows that name a file the folder doesn't have.
+    MissingFile,
+    /// Files in the folder that no row uses.
+    Unmatched,
+}
+
+impl Gap {
+    /// The CSV in the bundle that lists what was left out.
+    pub fn csv(self) -> &'static str {
+        match self {
+            Gap::NoFile | Gap::MissingFile => "skipped-rows.csv",
+            Gap::Unmatched => "unmatched-files.csv",
+        }
+    }
 }
 
 impl Fix {
@@ -64,6 +89,11 @@ impl Fix {
             Fix::SetCell { column, value, .. } => format!("set {column} to \"{value}\""),
             Fix::RenameColumn { from, to } => format!("rename column {from} -> {to}"),
             Fix::SetTitle { id, title } => format!("title {id} \"{title}\""),
+            Fix::FileGap(g) => match g {
+                Gap::NoFile => format!("leave out the rows with no file (listed in {})", g.csv()),
+                Gap::MissingFile => format!("leave out the rows whose file is missing (listed in {})", g.csv()),
+                Gap::Unmatched => format!("leave out the files no row uses (listed in {})", g.csv()),
+            },
         }
     }
 }
@@ -147,6 +177,11 @@ pub struct Report {
     pub attach: HashMap<String, NodeRef>,
     /// Columns that go nowhere (unknown and not renamed).
     pub dropped_columns: Vec<String>,
+    /// Files in the access folder that no row uses.
+    pub unmatched_files: Vec<std::path::PathBuf>,
+    /// Unmatched files that could become items of their own: (identifier
+    /// from the file name, parent container). Empty unless all of them can.
+    pub stub_items: Vec<(String, String)>,
     pub site_ok: bool,
 }
 
@@ -445,5 +480,7 @@ pub fn apply(table: &mut Table, titles: &mut HashMap<String, String>, fix: &Fix)
         Fix::SetTitle { id, title } => {
             titles.insert(id.clone(), title.clone());
         }
+        // Decided when the bundle is written.
+        Fix::FileGap(_) => {}
     }
 }

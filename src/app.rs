@@ -73,11 +73,22 @@ pub fn main(cli: Cli) -> Result<()> {
     println!("Checking against {} ({}); files from {}", site_name, site_cfg.host, session.files.root.display());
 
     let (_, first, _) = session.settle(&table, &[], &[]);
-    let accepted: Vec<Fix> = if cli.accept_suggestions {
+    let mut accepted: Vec<Fix> = if cli.accept_suggestions {
         first.findings.iter().filter(|f| !f.auto).filter_map(|f| f.fix.clone()).collect()
     } else {
         Vec::new()
     };
+    // Rows and files that don't pair up: left out (and listed in the bundle)
+    // unless --keep-unpaired says to ingest them anyway.
+    if !cli.keep_unpaired {
+        for f in &first.findings {
+            if let Some(fix @ Fix::FileGap(_)) = &f.fix {
+                if !accepted.contains(fix) {
+                    accepted.push(fix.clone());
+                }
+            }
+        }
+    }
     let (fixed, report, applied) = session.settle(&table, &accepted, &[]);
 
     println!("\n{}", bundle::report_text(&report, &applied, &table));
