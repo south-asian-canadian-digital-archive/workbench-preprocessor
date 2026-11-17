@@ -540,6 +540,60 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
     report.findings.extend(out);
 }
 
+/// List fields (field_ocr: always / never) take only their allowed values.
+/// A difference in case or spacing is fixed; anything else is an error.
+pub fn lists(s: &mut Session, table: &Table, report: &mut Report) {
+    let id_col = report.tree.id_column.clone().unwrap_or_default();
+    let subdelim = s.cfg.sacda.ingest.subdelimiter.clone();
+    for col in &table.headers {
+        let Some(def) = ["islandora_object", "archival_component"]
+            .iter()
+            .find_map(|b| s.cfg.schema.fields(b).get(col.as_str()).filter(|f| !f.allowed_values.is_empty()))
+        else {
+            continue;
+        };
+        for (i, row) in table.rows.iter().enumerate() {
+            let cell = table.get(row, col);
+            if cell.is_empty() {
+                continue;
+            }
+            let id = table.get(row, &id_col).to_string();
+            let mut fixed = Vec::new();
+            let mut bad = Vec::new();
+            for v in cell.split(subdelim.as_str()).map(str::trim) {
+                match def.allowed_values.iter().find(|a| a.eq_ignore_ascii_case(v)) {
+                    Some(a) => fixed.push(a.clone()),
+                    None => bad.push(v.to_string()),
+                }
+            }
+            if !bad.is_empty() {
+                report.findings.push(
+                    Finding::new(
+                        Error,
+                        "columns",
+                        format!(
+                            "{col}: \"{}\" isn't one of {} ({})",
+                            bad.join("\", \""),
+                            def.label,
+                            def.allowed_values.join(" / ")
+                        ),
+                    )
+                    .at(row.line, id),
+                );
+            } else {
+                let value = fixed.join(&subdelim);
+                if value != cell {
+                    report.findings.push(
+                        Finding::new(Info, "columns", format!("{col}: \"{cell}\" -> \"{value}\""))
+                            .at(row.line, id)
+                            .with_fix(Fix::SetCell { row: i, column: col.clone(), value }, true),
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub fn dates(s: &mut Session, table: &Table, report: &mut Report) {
     let edtf_cols: Vec<String> = table
         .headers

@@ -483,6 +483,7 @@ mod tests {
             cardinality: -1,
             target_type: "taxonomy_term".into(),
             targets: targets.iter().map(|s| s.to_string()).collect(),
+            allowed_values: vec![],
         }
     }
 

@@ -153,6 +153,9 @@ pub struct FieldDef {
     pub target_type: String,
     #[serde(default)]
     pub targets: Vec<String>,
+    /// For list fields: the values the field takes.
+    #[serde(default)]
+    pub allowed_values: Vec<String>,
 }
 
 fn one() -> i64 {

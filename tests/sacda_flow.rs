@@ -177,3 +177,33 @@ fn deep_nesting_needs_a_collection_title() {
     assert_eq!(t.nodes["2099_04_01_01_01"].level, "File");
     assert_eq!(t.nodes["2099_04_02"].level, "File");
 }
+
+#[test]
+fn ocr_column_takes_always_or_never() {
+    let Some(g) = g() else { return };
+    let cfg = Config::load_from(&g).unwrap();
+    let def = &cfg.schema.fields("islandora_object")["field_ocr"];
+    assert_eq!(def.allowed_values, ["always", "never"]);
+    // The thesaurus field points at the SACDA thesaurus only.
+    assert_eq!(cfg.schema.fields("islandora_object")["field_sacda_thesaurus"].targets, ["sacda_thesaurus"]);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let src = std::fs::read_to_string(g.join("data/examples/full-collection/sheet.csv")).unwrap();
+    let mut lines: Vec<String> = src.lines().map(String::from).collect();
+    lines[0].push_str(",OCR");
+    for (i, l) in lines.iter_mut().enumerate().skip(1) {
+        l.push_str(match i {
+            3 => ",Always",
+            4 => ",sometimes",
+            _ => ",",
+        });
+    }
+    std::fs::write(tmp.path().join("sheet.csv"), lines.join("\n")).unwrap();
+    let input = tmp.path().join("sheet.csv").to_string_lossy().to_string();
+    let table = source::load_for(&input, None, &cfg).unwrap();
+    assert!(table.col("field_ocr").is_some(), "OCR header maps to field_ocr");
+    let mut s = Session::new(cfg.clone(), &input, Options { site: Some("dev".into()), offline: true, ..Default::default() }).unwrap();
+    let (fixed, report, _) = s.settle(&table, &[], &[]);
+    assert!(errors(&report).iter().any(|e| e.contains("\"sometimes\" isn't one of OCR")), "{:?}", errors(&report));
+    assert_eq!(fixed.get(&fixed.rows[2], "field_ocr"), "always");
+}

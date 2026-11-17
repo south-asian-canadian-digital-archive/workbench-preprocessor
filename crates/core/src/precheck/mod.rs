@@ -384,6 +384,7 @@ impl Session {
         checks::structure(self, table, &mut report);
         checks::files(self, table, &mut report);
         checks::dates(self, table, &mut report);
+        checks::lists(self, table, &mut report);
         if report.site_ok {
             vocab::check(self, table, &mut report);
         }
