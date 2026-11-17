@@ -155,6 +155,10 @@ pub struct Cli {
     #[arg(long)]
     pub yes: bool,
 
+    /// Ignore the sheet's file column: every access file is <identifier>.<ext>
+    #[arg(long)]
+    pub files_by_identifier: bool,
+
     /// Skip all site lookups (quick structural check only; never writes a bundle)
     #[arg(long)]
     pub offline: bool,

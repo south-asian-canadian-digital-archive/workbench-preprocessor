@@ -200,6 +200,28 @@ pub fn headings_agree(typed: &str, authority: &str) -> bool {
     bag(typed) == bag(authority)
 }
 
+/// In plain words, why `typed` looks like `existing` - shown next to a
+/// suggestion so it's clear whether it's a typo fix or a different term.
+pub fn why(typed: &str, existing: &str) -> String {
+    let (a, b) = (letters(typed), letters(existing));
+    if a == b {
+        return "same letters - only case, accents, spacing or punctuation differ".into();
+    }
+    if a.trim_end_matches('s') == b.trim_end_matches('s') {
+        return "singular / plural of the same word".into();
+    }
+    let bag = |s: &str| {
+        let mut w: Vec<String> = s.split(|c: char| c.is_whitespace() || c == ',').map(letters).filter(|w| !w.is_empty()).collect();
+        w.sort();
+        w
+    };
+    if bag(typed) == bag(existing) {
+        return "same words in a different order".into();
+    }
+    let d = distance(&a, &b);
+    format!("looks like a spelling mistake - {d} letter{} different", if d == 1 { "" } else { "s" })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +286,13 @@ mod tests {
         let terms = ["Photographs", "Newspapers", "Anniversaries"];
         assert_eq!(closest("Photogrpahs", terms.iter().copied()), Some("Photographs"));
         assert_eq!(exact_ci("photographs", terms.iter().copied()), Some("Photographs"));
+    }
+
+    #[test]
+    fn explains_suggestions() {
+        assert!(why("Garbha", "Garba").contains("1 letter"));
+        assert!(why("Masjid", "Masjids").contains("plural"));
+        assert!(why("Giddhā", "Giddha").contains("same letters"));
+        assert!(why("Portraits, Group", "Group portraits").contains("order"));
     }
 }

@@ -27,6 +27,7 @@ fn check(sheet: &str, title: Option<&str>) -> Option<(Config, Table, Report, Vec
             access_dir: None,
             collection_title: title.map(String::from),
             offline: true,
+            ..Default::default()
         },
     )
     .unwrap();

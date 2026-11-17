@@ -5,7 +5,7 @@
 //! collected per vocabulary for the terms jobs, which run before the ingest -
 //! so the ingest itself never creates a term.
 
-use super::{Finding, Fix, Report, Session, Severity::*};
+use super::{Finding, Fix, Report, Session, Severity::*, TermHint};
 use crate::authority::{self, Resolved};
 use crate::config::FieldDef;
 use crate::source::Table;
@@ -125,6 +125,9 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
 
     for col in table.headers.clone() {
         for (i, row) in table.rows.iter().enumerate() {
+            if s.job.cancelled() {
+                return;
+            }
             let Some(bundle) = row_bundle[i] else { continue };
             let Some(def) = s.cfg.schema.fields(bundle).get(&col).cloned() else { continue };
             if !def.is_taxonomy() || col == "field_model" || col == "field_archival_level" {
@@ -136,6 +139,15 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
             }
             let id = table.get(row, &id_col).to_string();
             let rule = s.cfg.sacda.fields.get(&col).cloned().unwrap_or_default();
+            if i % 25 == 0 {
+                let asked = s.authorities.asked();
+                s.job.say(format!(
+                    "checking {col}, row {} of {}{}",
+                    row.line,
+                    table.rows.len() + 1,
+                    if asked > 0 { format!(" - {asked} lookup(s) at id.loc.gov so far") } else { String::new() }
+                ));
+            }
             let mut vals = Vec::new();
             let mut rewritten: Vec<String> = Vec::new();
             let mut changed = false;
@@ -178,7 +190,8 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                                                 a.name().to_uppercase()
                                             ),
                                         )
-                                        .at(row.line, id.clone()),
+                                        .at(row.line, id.clone())
+                                        .with_link(res.uri.clone()),
                                     ),
                                     _ => report.findings.push(
                                         Finding::new(
@@ -186,7 +199,8 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                                             "terms",
                                             format!("{col}: {} is {} \"{}\"", p.name, a.name().to_uppercase(), res.label),
                                         )
-                                        .at(row.line, id.clone()),
+                                        .at(row.line, id.clone())
+                                        .with_link(res.uri.clone()),
                                     ),
                                 }
                                 p.name = res.label.clone();
@@ -196,7 +210,8 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                             Ok(None) => {
                                 report.findings.push(
                                     Finding::new(Error, "terms", format!("{col}: id.loc.gov has no heading for {} - a typo, or a withdrawn ID? Use the current ID or the heading", p.name))
-                                        .at(row.line, id.clone()),
+                                        .at(row.line, id.clone())
+                                        .with_link(format!("https://id.loc.gov/search/?q={}", crate::site::urlencode(&p.name))),
                                 );
                                 vals.push(Val::Blocked);
                                 rewritten.push(raw.to_string());
@@ -223,6 +238,8 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 let mut found: Option<(String, String)> = None;
                 let mut near: Option<(String, String)> = None;
                 for vid in &targets {
+                    let memo_key = (vid.clone(), p.name.clone());
+                    let memo = s.term_memo.get(&memo_key).cloned();
                     let terms = match s.vocabulary(vid) {
                         Ok(t) => t,
                         Err(e) => {
@@ -230,21 +247,29 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                             continue;
                         }
                     };
-                    if let Some(name) = suggest::exact_ci(&p.name, terms.iter().map(|t| t.name.as_str()))
-                        .or_else(|| suggest::same_letters(&p.name, terms.iter().map(|t| t.name.as_str())))
-                    {
-                        found = Some((vid.clone(), name.to_string()));
+                    let (hit, close) = match memo {
+                        Some(m) => m,
+                        None => {
+                            let names = || terms.iter().map(|t| t.name.as_str());
+                            let hit = suggest::exact_ci(&p.name, names())
+                                .or_else(|| suggest::same_letters(&p.name, names()))
+                                .map(String::from);
+                            let close = if hit.is_none() { suggest::closest(&p.name, names()).map(String::from) } else { None };
+                            (hit, close)
+                        }
+                    };
+                    let by_uri = link
+                        .as_ref()
+                        .and_then(|l| terms.iter().find(|t| t.authority_uris.iter().any(|u| same_uri(u, &l.uri))))
+                        .map(|t| t.name.clone());
+                    s.term_memo.insert(memo_key, (hit.clone(), close.clone()));
+                    if let Some(name) = hit.or(by_uri) {
+                        found = Some((vid.clone(), name));
                         break;
                     }
-                    if let Some(l) = &link {
-                        if let Some(t) = terms.iter().find(|t| t.authority_uris.iter().any(|u| same_uri(u, &l.uri))) {
-                            found = Some((vid.clone(), t.name.clone()));
-                            break;
-                        }
-                    }
                     if near.is_none() {
-                        if let Some(n) = suggest::closest(&p.name, terms.iter().map(|t| t.name.as_str())) {
-                            near = Some((vid.clone(), n.to_string()));
+                        if let Some(n) = close {
+                            near = Some((vid.clone(), n));
                         }
                     }
                 }
@@ -291,21 +316,42 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     }
                 }
 
-                if let Some((_, near_name)) = near.as_ref().filter(|_| link.is_none()) {
+                if let Some((near_vocab, near_name)) = near.as_ref().filter(|_| link.is_none()) {
                     let fixed_cell = replace_value(&cell, raw, &render_name(raw, &p, near_name), &subdelim);
-                    report.findings.push(
-                        Finding::new(
-                            if creatable { Warning } else { Error },
-                            "terms",
-                            format!(
-                                "{col}: \"{}\" isn't on the site - did you mean \"{near_name}\"?{}",
-                                p.name,
-                                if creatable { " Otherwise it's created as a new term." } else { "" }
-                            ),
-                        )
-                        .at(row.line, id.clone())
-                        .with_fix(Fix::SetCell { row: i, column: col.clone(), value: fixed_cell }, false),
-                    );
+                    let why = suggest::why(&p.name, near_name);
+                    let tid = s
+                        .vocabulary(near_vocab)
+                        .ok()
+                        .and_then(|t| t.iter().find(|t| t.name == *near_name).map(|t| t.tid.clone()))
+                        .unwrap_or_default();
+                    let mut f = Finding::new(
+                        if creatable { Warning } else { Error },
+                        "terms",
+                        format!(
+                            "{col}: \"{}\" isn't on the site; existing {near_vocab} term \"{near_name}\" is close ({why}). {}",
+                            p.name,
+                            if creatable {
+                                format!("Use \"{near_name}\", or keep \"{}\" as a new term.", p.name)
+                            } else {
+                                format!("Use \"{near_name}\" - {new_vocab} can't get new terms from an ingest.")
+                            }
+                        ),
+                    )
+                    .at(row.line, id.clone())
+                    .with_fix(Fix::SetCell { row: i, column: col.clone(), value: fixed_cell }, false);
+                    if let Some(u) = s.term_url(&tid).filter(|_| !tid.is_empty()) {
+                        f = f.with_link(u);
+                    }
+                    f.hint = Some(TermHint {
+                        column: col.clone(),
+                        typed: p.name.clone(),
+                        existing: near_name.clone(),
+                        vocab: near_vocab.clone(),
+                        tid,
+                        why,
+                        creatable,
+                    });
+                    report.findings.push(f);
                 }
 
                 if !creatable {
@@ -362,14 +408,25 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
             format!("{} new {vocab} term(s), {linked} with an authority link - created by a terms job before the ingest", terms.len()),
         ));
         for t in terms.iter().filter(|t| t.link.is_none()) {
-            report.findings.push(
-                Finding::new(
-                    Warning,
-                    "terms",
-                    format!("new {vocab} term \"{}\" has no authority link - it will be created with just a name", t.name),
-                )
-                .at(t.uses[0].1, ""),
-            );
+            let mut f = Finding::new(
+                Warning,
+                "terms",
+                format!("new {vocab} term \"{}\" has no authority link - it will be created with just a name", t.name),
+            )
+            .at(t.uses[0].1, "");
+            // Somewhere to look for the heading by hand.
+            let auth = s.cfg.sacda.fields.get(&t.uses[0].0).and_then(|r| r.authority.clone());
+            if let Some(scheme) = auth.as_deref().and_then(|a| match a {
+                "lcsh" => Some("subjects"),
+                "lcnaf" => Some("names"),
+                _ => None,
+            }) {
+                f = f.with_link(format!(
+                    "https://id.loc.gov/search/?q={}&q=cs:http://id.loc.gov/authorities/{scheme}",
+                    crate::site::urlencode(&t.name)
+                ));
+            }
+            report.findings.push(f);
         }
     }
     if !thesaurus_missing.is_empty() {

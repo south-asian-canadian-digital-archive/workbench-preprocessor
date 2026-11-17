@@ -68,6 +68,23 @@ impl Fix {
     }
 }
 
+/// What a "did you mean" on a taxonomy value is about, so a screen can say it
+/// plainly and offer the right choices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TermHint {
+    pub column: String,
+    /// The value as the sheet has it.
+    pub typed: String,
+    /// The existing term it's probably meant to be.
+    pub existing: String,
+    pub vocab: String,
+    pub tid: String,
+    /// Why they look alike: "spelling - 1 letter different", "singular/plural"...
+    pub why: String,
+    /// Whether keeping the sheet's value creates a new term (false: it's an error).
+    pub creatable: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Finding {
     pub severity: Severity,
@@ -80,6 +97,9 @@ pub struct Finding {
     pub fix: Option<Fix>,
     /// Whether the fix is applied unless someone turns it off.
     pub auto: bool,
+    /// A page that helps decide: the authority heading, the term on the site.
+    pub link: Option<String>,
+    pub hint: Option<TermHint>,
 }
 
 impl Finding {
@@ -92,7 +112,13 @@ impl Finding {
             message: message.into(),
             fix: None,
             auto: false,
+            link: None,
+            hint: None,
         }
+    }
+    pub fn with_link(mut self, url: impl Into<String>) -> Self {
+        self.link = Some(url.into());
+        self
     }
     pub fn at(mut self, line: usize, id: impl Into<String>) -> Self {
         self.line = Some(line);
@@ -133,12 +159,15 @@ impl Report {
     }
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct Options {
     pub site: Option<String>,
     pub access_dir: Option<PathBuf>,
     pub collection_title: Option<String>,
     /// Skip site lookups (unit tests, or a quick look at a sheet offline).
     pub offline: bool,
+    /// Ignore the `file` column: every access file is `<identifier>.<ext>`.
+    pub files_by_identifier: bool,
 }
 
 /// State that outlives one check: the site client and everything fetched
@@ -158,6 +187,11 @@ pub struct Session {
     pub(crate) sticky: Vec<Finding>,
     /// Print what's being fetched to stderr (plain mode; never in the TUI).
     pub progress: bool,
+    /// Progress + cancel for a check running on another thread (the TUI).
+    pub job: std::sync::Arc<super::progress::Progress>,
+    /// (vocabulary, value) -> (matching term, closest term): fuzzy matching a
+    /// vocabulary is the slow part of a re-check, and the answers don't change.
+    pub(crate) term_memo: HashMap<(String, String), (Option<String>, Option<String>)>,
     pub authorities: Cache,
     site_findings: Option<(Vec<Finding>, bool)>,
 }
@@ -194,6 +228,8 @@ impl Session {
             nodes: HashMap::new(),
             prefetched: Default::default(),
             progress: false,
+            job: Default::default(),
+            term_memo: HashMap::new(),
             sticky: Vec::new(),
             authorities: if cfg!(test) { Cache::in_memory() } else { Cache::open() },
             site_findings: None,
@@ -205,6 +241,7 @@ impl Session {
             if self.progress && self.site.is_some() {
                 eprint!("  fetching vocabulary {vid}... ");
             }
+            self.job.say(format!("fetching the {vid} vocabulary from the site"));
             let t0 = std::time::Instant::now();
             let got = match &self.site {
                 Some(site) => site.vocabulary(vid).map_err(|e| e.to_string()),
@@ -254,6 +291,7 @@ impl Session {
                 if self.progress {
                     eprint!("  looking up what's already on the site under {root}... ");
                 }
+                self.job.say(format!("looking up what's already on the site under {root}"));
                 let got = site.nodes_under(&root);
                 if self.progress {
                     match &got {
@@ -285,6 +323,11 @@ impl Session {
         got
     }
 
+    /// A term's page on the site.
+    pub fn term_url(&self, tid: &str) -> Option<String> {
+        self.site.as_ref().map(|s| format!("{}/taxonomy/term/{tid}", s.host()))
+    }
+
     pub(crate) fn stick(&mut self, f: Finding) {
         if !self.sticky.iter().any(|x| x.message == f.message && x.line == f.line) {
             self.sticky.push(f);
@@ -296,7 +339,8 @@ impl Session {
         let mut report = Report::default();
         checks::site(self, &mut report);
         checks::columns(self, table, &mut report);
-        report.tree = super::tree::build(table, &self.cfg, &self.files);
+        self.job.say("checking columns, identifiers and files");
+        report.tree = super::tree::build_with(table, &self.cfg, &self.files, self.opts.files_by_identifier);
         for (id, t) in titles {
             if let Some(n) = report.tree.nodes.get_mut(id) {
                 n.title = t.clone();
@@ -346,6 +390,9 @@ impl Session {
         }
         for _ in 0..4 {
             let report = self.check(&current, &titles);
+            if self.job.cancelled() {
+                return (current, report, applied);
+            }
             let todo: Vec<Fix> = report
                 .findings
                 .iter()

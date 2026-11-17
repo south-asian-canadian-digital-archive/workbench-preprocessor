@@ -28,9 +28,29 @@ The installer picks the right build, verifies it against `SHASUMS256.txt`, puts 
 workbench `g/` folder (it holds `config/sacda.toml`) and remembers it, then runs `organise doctor`.
 Re-run it to update. From source: `cargo build --release`.
 
-The screen works with the mouse too: click a sheet (click it again to check it), a site, a tab, a finding,
-or its `[ ]` box to toggle the fix; the key chips in the footer are buttons; the wheel scrolls. (Mouse capture
-means the terminal's own text selection needs Shift/Option held while dragging.)
+### The screen
+
+- **Pick:** a sheet found under the current folder, or `u` to paste a Google Sheets link (it's checked as you
+  paste; Esc cancels a check that's taking too long). `f` sets the folder the access files are in - type it or
+  drag the folder into the window; the panel shows how many files it holds. `m` switches file names between "the
+  `file` column, else `<identifier>.<ext>`" and "always `<identifier>.<ext>`" (SACDA staging; also
+  `--files-by-identifier`).
+- **Checks run in the background.** The status line shows what's being fetched; you can read and decide findings
+  while it runs, and Esc cancels it.
+- **Each suggestion is a decision:** `y` uses the fix, `n` keeps the sheet's value (for a term: add it as a new
+  term, or - in a vocabulary ingests can't add to - leave the error). The detail pane says what the sheet has,
+  which existing term it's close to (with its term number and a link to it on the site), and why: a spelling
+  mistake (n letters), singular/plural, accents/case, word order. `[?]` = not decided yet, `[✓]` on, `[–]` off.
+  `a` uses every undecided suggestion.
+- **Nothing is re-checked until you press `c`.** Write (`w`) and write+ingest (`i`) only appear once the last
+  check covers every decision, nothing is undecided and there are no errors. `r` re-reads the sheet and the site
+  (after editing the sheet, or ingesting thesaurus terms).
+- **Links:** `o` (or the link line under a finding) opens the LCSH/LC heading, the site term, or an id.loc.gov
+  search in the browser. On the New terms tab, each term with an authority link has a box: Space leaves that link
+  out of the created term, `L` toggles all of them.
+- **Mouse:** click sheets (again to open), sites, tabs, findings, their `[?]` box, the `y`/`n`/`o` buttons and
+  the footer chips; the wheel scrolls. Mouse capture means the terminal's own text selection needs Shift (Option
+  in some terminals) held while dragging.
 
 ## What it does
 
@@ -63,7 +83,7 @@ means the terminal's own text selection needs Shift/Option held while dragging.)
      to archival_component collections
    - columns: unknown columns get a "did you mean" from `suggest.rs` (case, `_`, missing `field_`, typos, plurals)
    - structure: identifiers valid, titles present, nothing already on the site
-   - files: in the access folder (`access/` next to the sheet), extension accepted by the site's media types,
+   - files: in the access folder (`access/` next to the sheet, or the one chosen with `f` / `--access-dir`), extension accepted by the site's media types,
      no derivatives
    - dates: EDTF, with fixes for what people actually type (`05/1978`, `1970s`, `c. 1975`, `1975-1979`, `May 1979`)
    - terms: every value matched to the site's vocabularies (by name, or by authority URI); near misses suggested;
@@ -71,7 +91,9 @@ means the terminal's own text selection needs Shift/Option held while dragging.)
      in the sheet); protected vocabularies and the SACDA Thesaurus are never added to - a missing thesaurus term
      blocks the run until the thesaurus job has run
 4. **Fixes.** Safe ones (EDTF, capitalisation, identifier -> heading) are on; guesses (typos) are offered and off
-   until accepted (`Space` / `a` on the screen, `--accept-suggestions`). Fixes change the bundle, never the sheet.
+   until accepted (`y` / `a` on the screen, `--accept-suggestions`). Fixes change the bundle, never the sheet.
+   Failed id.loc.gov lookups (throttling) aren't retried within a run, so a re-check takes about a second;
+   `r` tries them again.
 5. **Writes the bundle** (`ingest-<collection>-<site>/` next to the sheet) from `g/config/templates/`:
    `terms-<vocab>.csv` + config per vocabulary with new terms, `components.csv` (nested archival_components,
    parents first) with `items.csv` as its secondary task, `bundle.toml` (steps in order) and `precheck-report.txt`.

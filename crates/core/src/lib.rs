@@ -11,6 +11,7 @@
 //! - `bundle`     write CSVs + configs + manifest
 //! - `run`        drive Workbench over a bundle
 //! - `doctor`     machine + site health check
+//! - `progress`   progress + cancel handle for a check running elsewhere
 
 pub mod authority;
 pub mod bundle;
@@ -18,6 +19,7 @@ pub mod config;
 pub mod doctor;
 pub mod edtf;
 pub mod precheck;
+pub mod progress;
 pub mod run;
 pub mod site;
 pub mod source;

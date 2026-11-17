@@ -1,19 +1,18 @@
-//! Drawing. Pure functions of `App` - no state changes here.
+//! Drawing. Pure functions of `App` - no state changes here, apart from
+//! recording where the clickable things ended up.
 
-use super::{App, Entry, Hit, Input, Review, Screen, Tab};
-use std::cell::RefCell;
-
-type Hits = RefCell<Vec<(Rect, Hit)>>;
+use super::{sheet_id, App, Choice, Entry, Hit, Input, Review, Screen, Tab};
 use crossterm::event::KeyCode;
-use sacda::precheck::Severity;
-use sacda::tree::Kind;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
+use sacda::precheck::Severity;
+use sacda::tree::Kind;
 
 const ACCENT: Color = Color::Cyan;
+const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 fn sev_style(s: Severity) -> Style {
     match s {
@@ -21,6 +20,10 @@ fn sev_style(s: Severity) -> Style {
         Severity::Warning => Style::new().fg(Color::Yellow),
         Severity::Info => Style::new().fg(Color::DarkGray),
     }
+}
+
+fn link_style() -> Style {
+    Style::new().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)
 }
 
 fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
@@ -34,6 +37,7 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 
 pub fn draw(f: &mut Frame, app: &App) {
     app.hits.borrow_mut().clear();
+    app.links.borrow_mut().clear();
     let area = f.area();
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -43,19 +47,34 @@ pub fn draw(f: &mut Frame, app: &App) {
     header(f, app, rows[0]);
     match &app.screen {
         Screen::Pick => pick(f, app, rows[1]),
-        Screen::Review(r) => review(f, r, rows[1], &app.hits),
+        Screen::Review(r) => review(f, app, r, rows[1]),
         Screen::Written { summary, dir } => written(f, summary, dir, rows[1]),
     }
-    let status = if app.status.is_empty() {
-        Line::from("")
-    } else {
-        Line::from(Span::styled(app.status.clone(), Style::new().fg(Color::Yellow)))
-    };
-    f.render_widget(Paragraph::new(status), rows[2]);
+    f.render_widget(Paragraph::new(status_line(app)), rows[2]);
     let foot = footer(app);
     register_chips(app, &foot, rows[3]);
     f.render_widget(Paragraph::new(foot), rows[3]);
     input_popup(f, app, area);
+}
+
+fn status_line(app: &App) -> Line<'static> {
+    if let Some(job) = &app.job {
+        let secs = job.started.elapsed().as_secs();
+        let spin = SPINNER[(job.started.elapsed().as_millis() / 100) as usize % SPINNER.len()];
+        let what = job.progress.message();
+        let tail = if job.cancelling { "  cancelling at the next row ...".to_string() } else { "  (Esc cancels)".to_string() };
+        return Line::from(vec![
+            Span::styled(format!("{spin} {}", job.label), Style::new().fg(ACCENT).bold()),
+            Span::raw(if what.is_empty() { String::new() } else { format!(" - {what}") }),
+            Span::styled(format!("  {secs}s"), Style::new().fg(Color::DarkGray)),
+            Span::styled(tail, Style::new().fg(Color::DarkGray)),
+        ]);
+    }
+    if app.status.is_empty() {
+        Line::from("")
+    } else {
+        Line::from(Span::styled(app.status.clone(), Style::new().fg(Color::Yellow)))
+    }
 }
 
 /// The key a footer chip stands for, so it can be clicked.
@@ -73,8 +92,7 @@ fn chip_key(label: &str) -> Option<KeyCode> {
 fn register_chips(app: &App, line: &Line, area: Rect) {
     let mut x = area.x;
     let mut hits = app.hits.borrow_mut();
-    let spans = &line.spans;
-    for pair in spans.chunks(2) {
+    for pair in line.spans.chunks(2) {
         let w: u16 = pair.iter().map(|s| s.content.chars().count() as u16).sum();
         if let Some(code) = chip_key(&pair[0].content) {
             hits.push((Rect::new(x, area.y, w.min(area.right().saturating_sub(x)), 1), Hit::Key(code)));
@@ -104,8 +122,11 @@ fn header(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(format!("{e} error(s)"), if e > 0 { sev_style(Severity::Error) } else { Style::new().fg(Color::Green) }));
         spans.push(Span::raw("  "));
         spans.push(Span::styled(format!("{w} warning(s)"), sev_style(Severity::Warning)));
-        if e == 0 {
-            spans.push(Span::styled("   ready to write", Style::new().fg(Color::Green).bold()));
+        spans.push(Span::raw("   "));
+        match (app.job.is_some(), r.not_ready()) {
+            (true, _) => spans.push(Span::styled("checking ...", Style::new().fg(ACCENT))),
+            (false, None) => spans.push(Span::styled("ready to write / ingest", Style::new().fg(Color::Green).bold())),
+            (false, Some(why)) => spans.push(Span::styled(why, Style::new().fg(Color::Yellow))),
         }
     }
     f.render_widget(
@@ -131,21 +152,43 @@ fn footer(app: &App) -> Line<'static> {
     if !matches!(app.input, Input::None) {
         return keys(&[("Enter", "ok"), ("Esc", "cancel")]);
     }
+    if app.job.is_some() && !matches!(app.screen, Screen::Review(_)) {
+        return keys(&[("Esc", "cancel"), ("q", "quit")]);
+    }
     match &app.screen {
-        Screen::Pick => keys(&[("↑↓", "sheet"), ("←→", "site"), ("Enter", "check"), ("u", "Google Sheets link"), ("q", "quit")]),
-        Screen::Review(r) => match r.tab {
-            Tab::Findings => keys(&[
-                ("Space", "toggle fix"),
-                ("a", "accept all"),
-                ("t", "title"),
-                ("r", "re-read"),
-                ("w", "write"),
-                ("i", "write+ingest"),
-                ("Tab", "view"),
-                ("Esc", "back"),
-            ]),
-            _ => keys(&[("↑↓", "scroll"), ("Tab", "view"), ("w", "write"), ("i", "write+ingest"), ("Esc", "back"), ("q", "quit")]),
-        },
+        Screen::Pick => keys(&[
+            ("↑↓", "sheet"),
+            ("←→", "site"),
+            ("Enter", "check"),
+            ("u", "Google Sheets link"),
+            ("f", "files folder"),
+            ("m", "file names"),
+            ("q", "quit"),
+        ]),
+        Screen::Review(r) => {
+            let ready = app.job.is_none() && r.not_ready().is_none();
+            let mut k: Vec<(&str, &str)> = match r.tab {
+                Tab::Findings => vec![("y", "use fix"), ("n", "keep as is"), ("a", "use all"), ("o", "open link")],
+                Tab::Terms => vec![("Space", "link on/off"), ("L", "all links"), ("o", "open link")],
+                Tab::Tree => vec![("↑↓", "scroll")],
+            };
+            if app.job.is_some() {
+                k.push(("Esc", "cancel check"));
+            } else {
+                let c_label = if r.changes > 0 { "re-check (needed)" } else { "re-check" };
+                k.push(("c", c_label));
+                k.push(("r", "re-read sheet"));
+            }
+            if ready {
+                k.push(("w", "write"));
+                k.push(("i", "write+ingest"));
+            }
+            k.push(("Tab", "view"));
+            if app.job.is_none() {
+                k.push(("Esc", "back"));
+            }
+            keys(&k)
+        }
         Screen::Written { .. } => keys(&[("i", "ingest now"), ("Enter", "done")]),
     }
 }
@@ -153,7 +196,7 @@ fn footer(app: &App) -> Line<'static> {
 fn pick(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(area);
     let cwd = std::env::current_dir().unwrap_or_default();
     let items: Vec<ListItem> = if app.files.is_empty() {
@@ -174,6 +217,7 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
         &mut state,
     );
     app.hits.borrow_mut().push((inner(cols[0]), Hit::PickList { offset: state.offset() }));
+
     // Site lines start two rows into the "Where" box.
     let wi = inner(cols[1]);
     for i in 0..app.sites.len() {
@@ -193,15 +237,38 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(if cfg.confirm { "  (asks to confirm)" } else { "" }, Style::new().fg(Color::Red)),
         ]));
     }
+
+    // Files folder for the selected sheet (or a link).
+    let selected = app.files.get(app.pick_sel).map(|p| p.to_string_lossy().to_string());
+    let (dir, chosen) = app.access_for(selected.as_deref());
+    let count = app.folder_count(&dir);
     lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::raw("Files folder "), Span::styled("(f to change):", Style::new().fg(Color::DarkGray))]));
+    lines.push(Line::from(Span::styled(format!("  {}", dir.display()), Style::new().fg(ACCENT))));
+    lines.push(match count {
+        Some(n) => Line::from(Span::styled(
+            format!("  {n} file(s){}", if chosen { "" } else { " - `access` next to the sheet" }),
+            Style::new().fg(Color::Green),
+        )),
+        None => Line::from(Span::styled(
+            "  not found - press f and type or drop the folder in",
+            Style::new().fg(Color::Yellow),
+        )),
+    });
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![Span::raw("File names "), Span::styled("(m to change):", Style::new().fg(Color::DarkGray))]));
     lines.push(Line::from(Span::styled(
-        "Files are looked up in the `access` folder next to the sheet.",
-        Style::new().fg(Color::DarkGray),
+        if app.files_by_identifier {
+            "  <identifier>.<ext> for every item (file column ignored)"
+        } else {
+            "  the file column; rows without one use <identifier>.<ext>"
+        },
+        Style::new().fg(ACCENT),
     )));
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::bordered().title(" Where ")), cols[1]);
 }
 
-fn review(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
+fn review(f: &mut Frame, app: &App, r: &Review, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(3)])
@@ -221,7 +288,7 @@ fn review(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
     for (i, t) in titles.iter().enumerate() {
         let w = t.chars().count() as u16 + 2;
         let code = KeyCode::Char(char::from(b'1' + i as u8));
-        hits.borrow_mut().push((Rect::new(x, rows[0].y, w.min(rows[0].right().saturating_sub(x)), 1), Hit::Key(code)));
+        app.hits.borrow_mut().push((Rect::new(x, rows[0].y, w.min(rows[0].right().saturating_sub(x)), 1), Hit::Key(code)));
         x = x.saturating_add(w + 1);
     }
     f.render_widget(
@@ -229,22 +296,27 @@ fn review(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
         rows[0],
     );
     match r.tab {
-        Tab::Findings => findings(f, r, rows[1], hits),
+        Tab::Findings => findings(f, app, r, rows[1]),
         Tab::Tree => {
-            hits.borrow_mut().push((rows[1], Hit::Scroll));
+            app.hits.borrow_mut().push((rows[1], Hit::Scroll));
             tree(f, r, rows[1])
         }
-        Tab::Terms => {
-            hits.borrow_mut().push((rows[1], Hit::Scroll));
-            terms(f, r, rows[1])
-        }
+        Tab::Terms => terms(f, app, r, rows[1]),
     }
 }
 
-fn findings(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
+fn mark(c: Choice) -> (&'static str, Style) {
+    match c {
+        Choice::On => ("[✓] ", Style::new().fg(Color::Green)),
+        Choice::Off => ("[–] ", Style::new().fg(Color::DarkGray)),
+        Choice::Undecided => ("[?] ", Style::new().fg(Color::Yellow).bold()),
+    }
+}
+
+fn findings(f: &mut Frame, app: &App, r: &Review, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .split(area);
     let items: Vec<ListItem> = r
         .entries
@@ -252,28 +324,29 @@ fn findings(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
         .map(|e| match e {
             Entry::Finding(i) => {
                 let fd = &r.report.findings[*i];
-                let mark = match &fd.fix {
-                    Some(fix) if r.accepted.contains(fix) => "[x] ",
-                    Some(fix) if r.rejected.contains(fix) => "[ ] ",
-                    Some(_) if fd.auto => "[x] ",
-                    Some(_) => "[ ] ",
-                    None => "    ",
+                let (m, ms) = match &fd.fix {
+                    Some(fix) => mark(r.choice(fix, fd.auto)),
+                    None => ("    ", Style::new()),
                 };
                 let loc = fd.line.map(|l| format!("r{l} ")).unwrap_or_default();
                 ListItem::new(Line::from(vec![
-                    Span::raw(mark),
+                    Span::styled(m, ms),
                     Span::styled(format!("{:<8}", fd.severity.label()), sev_style(fd.severity)),
-                    Span::styled(format!("{:<10}", fd.check), Style::new().fg(Color::DarkGray)),
+                    Span::styled(format!("{:<8}", fd.check), Style::new().fg(Color::DarkGray)),
                     Span::raw(loc),
                     Span::raw(fd.message.clone()),
                 ]))
             }
-            Entry::Applied(fix) => ListItem::new(Line::from(vec![
-                Span::raw("[x] "),
-                Span::styled(format!("{:<8}", "fixed"), Style::new().fg(Color::Green)),
-                Span::styled(format!("{:<10}", ""), Style::new()),
-                Span::raw(fix.describe_at(&r.original)),
-            ])),
+            Entry::Applied(fix) => {
+                let off = r.rejected.contains(fix);
+                let (m, ms) = mark(if off { Choice::Off } else { Choice::On });
+                ListItem::new(Line::from(vec![
+                    Span::styled(m, ms),
+                    Span::styled(format!("{:<8}", if off { "off" } else { "fixed" }), Style::new().fg(Color::Green)),
+                    Span::raw(format!("{:<8}", "")),
+                    Span::raw(fix.describe_at(&r.original)),
+                ]))
+            }
         })
         .collect();
     let mut state = ListState::default().with_selected(if r.entries.is_empty() { None } else { Some(r.sel) });
@@ -286,10 +359,24 @@ fn findings(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
         &mut state,
     );
     // "> " highlight column + "[x] " box = the first 6 cells toggle.
-    hits.borrow_mut().push((inner(cols[0]), Hit::Findings { offset: state.offset(), check_cols: 6 }));
+    app.hits.borrow_mut().push((inner(cols[0]), Hit::Findings { offset: state.offset(), check_cols: 6 }));
+    detail(f, app, r, cols[1]);
+}
 
-    // Detail of the selected entry.
+/// An action button: `[y] Use "Garba"`, clickable like the key.
+fn button(key: char, label: String, on: bool) -> Line<'static> {
+    let style = if on { Style::new().fg(Color::Black).bg(Color::Green).bold() } else { Style::new().fg(Color::Black).bg(ACCENT) };
+    Line::from(vec![
+        Span::styled(format!(" {key} "), style),
+        Span::raw(format!(" {label}{}", if on { "   ← chosen" } else { "" })),
+    ])
+}
+
+fn detail(f: &mut Frame, app: &App, r: &Review, area: Rect) {
     let mut text = Text::default();
+    // (key, label, chosen) buttons, drawn under the text.
+    let mut buttons: Vec<(char, String, bool)> = Vec::new();
+    let mut link: Option<String> = None;
     match r.entries.get(r.sel) {
         Some(Entry::Finding(i)) => {
             let fd = &r.report.findings[*i];
@@ -298,27 +385,126 @@ fn findings(f: &mut Frame, r: &Review, area: Rect, hits: &Hits) {
                 text.push_line(format!("Sheet row {l}{}", fd.id.as_ref().map(|i| format!(" - {i}")).unwrap_or_default()));
             }
             text.push_line("");
-            text.push_line(fd.message.clone());
-            if let Some(fix) = &fd.fix {
-                text.push_line("");
-                let on = (fd.auto || r.accepted.contains(fix)) && !r.rejected.contains(fix);
-                text.push_line(Line::from(vec![
-                    Span::styled(if on { "Fix (on): " } else { "Suggested fix (off): " }, Style::new().fg(ACCENT).bold()),
-                    Span::raw(fix.describe()),
-                ]));
-                text.push_line(Span::styled("Space turns it on/off. Fixes change the bundle, never your sheet.", Style::new().fg(Color::DarkGray)));
+            link = fd.link.clone();
+            match (&fd.hint, &fd.fix) {
+                (Some(h), Some(fix)) => {
+                    let c = r.choice(fix, fd.auto);
+                    text.push_line(Line::from(vec![
+                        Span::raw(format!("{}: the sheet has ", h.column)),
+                        Span::styled(format!("\"{}\"", h.typed), Style::new().bold()),
+                        Span::raw(", which isn't on the site."),
+                    ]));
+                    text.push_line("");
+                    text.push_line(Line::from(vec![
+                        Span::raw("Existing "),
+                        Span::styled(h.vocab.clone(), Style::new().fg(ACCENT)),
+                        Span::raw(" term: "),
+                        Span::styled(format!("\"{}\"", h.existing), Style::new().fg(Color::Green).bold()),
+                        Span::styled(if h.tid.is_empty() { String::new() } else { format!("  (term {})", h.tid) }, Style::new().fg(Color::DarkGray)),
+                    ]));
+                    text.push_line(Line::from(vec![Span::raw("Why it's suggested: "), Span::styled(h.why.clone(), Style::new().fg(Color::Yellow))]));
+                    buttons.push(('y', format!("Use the existing term \"{}\"", h.existing), c == Choice::On));
+                    buttons.push((
+                        'n',
+                        if h.creatable {
+                            format!("Keep \"{}\" - add it as a new {} term", h.typed, h.vocab)
+                        } else {
+                            format!("Keep \"{}\" (stays an error - {} can't get new terms)", h.typed, h.vocab)
+                        },
+                        c == Choice::Off,
+                    ));
+                }
+                (None, Some(fix)) => {
+                    let c = r.choice(fix, fd.auto);
+                    text.push_line(fd.message.clone());
+                    text.push_line("");
+                    text.push_line(Line::from(vec![Span::styled("Fix: ", Style::new().fg(ACCENT).bold()), Span::raw(fix.describe())]));
+                    if fd.auto {
+                        text.push_line(Span::styled("A safe fix - on unless you turn it off.", Style::new().fg(Color::DarkGray)));
+                    }
+                    buttons.push(('y', "Apply this fix".into(), c == Choice::On));
+                    buttons.push(('n', "Keep the sheet's value".into(), c == Choice::Off));
+                }
+                (_, None) => {
+                    text.push_line(fd.message.clone());
+                    if fd.severity == Severity::Error {
+                        text.push_line("");
+                        text.push_line(Span::styled(
+                            "Fix this in the sheet, then press r to re-read it.",
+                            Style::new().fg(Color::DarkGray),
+                        ));
+                    }
+                }
             }
         }
         Some(Entry::Applied(fix)) => {
-            text.push_line(Line::from(Span::styled("FIXED", Style::new().fg(Color::Green).bold())));
+            let off = r.rejected.contains(fix);
+            text.push_line(Line::from(Span::styled(if off { "FIX TURNED OFF" } else { "FIXED" }, Style::new().fg(Color::Green).bold())));
             text.push_line("");
             text.push_line(fix.describe_at(&r.original));
-            text.push_line("");
-            text.push_line(Span::styled("Space turns this fix off.", Style::new().fg(Color::DarkGray)));
+            buttons.push(('y', "Keep this fix".into(), !off));
+            buttons.push(('n', "Turn it off - keep the sheet's value".into(), off));
         }
         None => text.push_line("Nothing to report - the sheet is clean."),
     }
-    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }).block(Block::bordered().title(" Detail ")), cols[1]);
+    if !buttons.is_empty() {
+        text.push_line("");
+        text.push_line(Span::styled(
+            "Choices are applied when you re-check (c). Nothing changes your sheet.",
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
+
+    let block = Block::bordered().title(" Detail ");
+    let body = block.inner(area);
+    f.render_widget(block, area);
+    let extra = buttons.len() as u16 + if link.is_some() { 2 } else { 0 } + if buttons.is_empty() { 0 } else { 1 };
+    // Buttons go right under the text (estimated after wrapping), not at the
+    // bottom of a tall pane where they're easy to miss.
+    let w = body.width.max(1) as usize;
+    let text_h: usize = text.lines.iter().map(|l| l.width().max(1).div_ceil(w)).sum();
+    let text_h = (text_h as u16).min(body.height.saturating_sub(extra));
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(text_h), Constraint::Length(extra), Constraint::Min(0)])
+        .split(body);
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), parts[0]);
+
+    let mut y = parts[1].y;
+    if !buttons.is_empty() {
+        y += 1;
+    }
+    for (k, label, on) in buttons {
+        if y >= parts[1].bottom() {
+            break;
+        }
+        let rect = Rect::new(parts[1].x, y, parts[1].width, 1);
+        f.render_widget(Paragraph::new(button(k, label, on)), rect);
+        app.hits.borrow_mut().push((rect, Hit::Key(KeyCode::Char(k))));
+        y += 1;
+    }
+    if let Some(url) = link {
+        y += 1;
+        if y < parts[1].bottom() {
+            let rect = Rect::new(parts[1].x, y, parts[1].width, 1);
+            let idx = push_link(app, &url);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(" o ", Style::new().fg(Color::Black).bg(ACCENT)),
+                    Span::raw(" "),
+                    Span::styled(url, link_style()),
+                ])),
+                rect,
+            );
+            app.hits.borrow_mut().push((rect, Hit::Link(idx)));
+        }
+    }
+}
+
+fn push_link(app: &App, url: &str) -> usize {
+    let mut l = app.links.borrow_mut();
+    l.push(url.to_string());
+    l.len() - 1
 }
 
 fn tree(f: &mut Frame, r: &Review, area: Rect) {
@@ -328,7 +514,11 @@ fn tree(f: &mut Frame, r: &Review, area: Rect) {
         let indent = "  ".repeat(depth);
         match n.kind {
             Kind::Item => {
-                let files = if n.files.len() > 1 { format!(" ({} files)", n.files.len()) } else { String::new() };
+                let files = match n.files.len() {
+                    0 => " (no file)".to_string(),
+                    1 => String::new(),
+                    k => format!(" ({k} files)"),
+                };
                 lines.push(Line::from(vec![
                     Span::raw(format!("{indent}· ")),
                     Span::styled(n.id.clone(), Style::new().fg(Color::DarkGray)),
@@ -367,30 +557,63 @@ fn tree(f: &mut Frame, r: &Review, area: Rect) {
     );
 }
 
-fn terms(f: &mut Frame, r: &Review, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
-    if r.report.new_terms.is_empty() {
-        lines.push(Line::from("No new terms - every value is already on the site."));
-    }
-    for (vocab, terms) in &r.report.new_terms {
-        lines.push(Line::from(Span::styled(format!("{vocab} ({} new)", terms.len()), Style::new().fg(ACCENT).bold())));
-        for t in terms {
-            let link = match &t.link {
-                Some(l) => Span::styled(format!("  {} {}", l.source, l.uri), Style::new().fg(Color::Green)),
-                None => Span::styled("  no authority link - name only", Style::new().fg(Color::Yellow)),
-            };
-            lines.push(Line::from(vec![Span::raw(format!("  {}", t.name)), link]));
-        }
-        lines.push(Line::from(""));
-    }
-    lines.push(Line::from(Span::styled(
-        "These are created by a terms job before the ingest. SACDA Thesaurus terms are never created here.",
-        Style::new().fg(Color::DarkGray),
-    )));
-    f.render_widget(
-        Paragraph::new(lines).scroll((r.scroll, 0)).wrap(Wrap { trim: false }).block(Block::bordered().title(" New terms ")),
-        area,
+fn terms(f: &mut Frame, app: &App, r: &Review, area: Rect) {
+    let rows = r.term_rows();
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .split(area);
+    let vw = r.report.new_terms.keys().map(|v| v.chars().count()).max().unwrap_or(0) + 2;
+    let items: Vec<ListItem> = if rows.is_empty() {
+        vec![ListItem::new("No new terms - every value is already on the site.")]
+    } else {
+        rows.iter()
+            .map(|(v, i)| {
+                let t = &r.report.new_terms[v][*i];
+                let uses = t.uses.len();
+                let mut spans = Vec::new();
+                match &t.link {
+                    Some(_) if r.no_link.contains(&(v.clone(), t.name.clone())) => {
+                        spans.push(Span::styled("[ ] ", Style::new().fg(Color::DarkGray)))
+                    }
+                    Some(_) => spans.push(Span::styled("[✓] ", Style::new().fg(Color::Green))),
+                    None => spans.push(Span::raw("    ")),
+                }
+                spans.push(Span::styled(format!("{v:<vw$}"), Style::new().fg(Color::DarkGray)));
+                spans.push(Span::styled(t.name.clone(), Style::new().bold()));
+                spans.push(Span::styled(format!("  ({uses} row{})", if uses == 1 { "" } else { "s" }), Style::new().fg(Color::DarkGray)));
+                match &t.link {
+                    Some(l) if r.no_link.contains(&(v.clone(), t.name.clone())) => {
+                        spans.push(Span::styled(format!("  {} link left out", l.source), Style::new().fg(Color::DarkGray)))
+                    }
+                    Some(l) => {
+                        spans.push(Span::raw(format!("  {} ", l.source)));
+                        spans.push(Span::styled(l.uri.clone(), link_style()));
+                    }
+                    None => spans.push(Span::styled("  no authority link - name only", Style::new().fg(Color::Yellow))),
+                }
+                ListItem::new(Line::from(spans))
+            })
+            .collect()
+    };
+    let mut state = ListState::default().with_selected(if rows.is_empty() { None } else { Some(r.term_sel) });
+    f.render_stateful_widget(
+        List::new(items)
+            .block(Block::bordered().title(" New terms - created by a terms job before the ingest "))
+            .highlight_style(Style::new().bg(Color::DarkGray))
+            .highlight_symbol("> "),
+        parts[0],
+        &mut state,
     );
+    app.hits.borrow_mut().push((inner(parts[0]), Hit::Terms { offset: state.offset(), check_cols: 6 }));
+    let help = vec![
+        Line::from(Span::styled(
+            "[✓] the term is created with its authority link; Space (or click the box) leaves it out. o, or clicking the selected row, opens the link.",
+            Style::new().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled("SACDA Thesaurus terms are never created here.", Style::new().fg(Color::DarkGray))),
+    ];
+    f.render_widget(Paragraph::new(help).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::TOP)), parts[1]);
 }
 
 fn written(f: &mut Frame, summary: &[String], dir: &std::path::Path, area: Rect) {
@@ -408,7 +631,12 @@ fn written(f: &mut Frame, summary: &[String], dir: &std::path::Path, area: Rect)
 fn input_popup(f: &mut Frame, app: &App, area: Rect) {
     let (title, prompt, buf) = match &app.input {
         Input::None => return,
-        Input::Url(b) => (" Google Sheets link ", "Paste the sheet's link (it must be shared as 'anyone with the link'):".to_string(), b),
+        Input::Url(b) => (" Google Sheets link ", "Paste the sheet's link (shared as 'anyone with the link can view'):".to_string(), b),
+        Input::Folder(b) => (
+            " Files folder ",
+            "Folder with the access files - type it, or drag the folder into this window. Empty = `access` next to the sheet:".to_string(),
+            b,
+        ),
         Input::Confirm(b) => (
             " Confirm ",
             format!("This writes to {}. Type '{}' to continue:", app.site(), app.site()),
@@ -416,13 +644,46 @@ fn input_popup(f: &mut Frame, app: &App, area: Rect) {
         ),
         Input::Title { id, buf } => (" Collection title ", format!("{id} isn't in the sheet or on the site. Title for the new collection:"), buf),
     };
-    let w = area.width.saturating_sub(10).min(90);
-    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height / 3, w, 5);
+    let w = area.width.saturating_sub(6).min(100);
+    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height / 3, w, 8);
+    // The end of what's typed, so a long link is visibly there.
+    let room = w.saturating_sub(6) as usize;
+    let shown = if buf.chars().count() > room {
+        format!("…{}", buf.chars().rev().take(room - 1).collect::<String>().chars().rev().collect::<String>())
+    } else {
+        buf.clone()
+    };
+    let check = match &app.input {
+        Input::Url(b) if b.trim().is_empty() => Line::from(Span::styled("Ctrl+U clears", Style::new().fg(Color::DarkGray))),
+        Input::Url(b) => match sheet_id(b) {
+            Some(id) => Line::from(Span::styled(
+                format!("✓ Google Sheets link ({} characters, sheet {}…) - Enter to check it", b.trim().len(), &id[..8.min(id.len())]),
+                Style::new().fg(Color::Green),
+            )),
+            None => Line::from(Span::styled("✗ not a Google Sheets link yet (docs.google.com/spreadsheets/d/...)", Style::new().fg(Color::Yellow))),
+        },
+        Input::Folder(b) if b.trim().is_empty() => Line::from(Span::styled("Enter = use `access` next to the sheet", Style::new().fg(Color::DarkGray))),
+        Input::Folder(b) => {
+            // Only exists-or-not while typing: counting `/` would walk the disk.
+            if super::clean_path(b).is_dir() {
+                Line::from(Span::styled("✓ folder found - Enter to use it", Style::new().fg(Color::Green)))
+            } else {
+                Line::from(Span::styled("✗ no such folder", Style::new().fg(Color::Yellow)))
+            }
+        }
+        _ => Line::from(""),
+    };
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(vec![Line::from(prompt), Line::from(""), Line::from(Span::styled(format!("> {buf}_"), Style::new().fg(ACCENT)))])
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(title).border_style(Style::new().fg(ACCENT))),
+        Paragraph::new(vec![
+            Line::from(prompt),
+            Line::from(""),
+            Line::from(Span::styled(format!("> {shown}▏"), Style::new().fg(ACCENT))),
+            Line::from(""),
+            check,
+        ])
+        .wrap(Wrap { trim: false })
+        .block(Block::bordered().title(title).border_style(Style::new().fg(ACCENT))),
         rect,
     );
 }

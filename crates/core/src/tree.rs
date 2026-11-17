@@ -208,6 +208,12 @@ fn extension_of(name: &str) -> String {
 }
 
 pub fn build(table: &Table, cfg: &Config, files: &FileIndex) -> Tree {
+    build_with(table, cfg, files, false)
+}
+
+/// `build`, optionally ignoring the `file` column and naming every access
+/// file after its identifier (`2024_19_118_001.tif`) - SACDA's staging rule.
+pub fn build_with(table: &Table, cfg: &Config, files: &FileIndex, by_identifier: bool) -> Tree {
     let ingest: &IngestCfg = &cfg.sacda.ingest;
     let mut tree = Tree::default();
     let Some(id_col) = ID_COLUMNS.iter().find(|c| table.col(c).is_some()) else {
@@ -280,7 +286,7 @@ pub fn build(table: &Table, cfg: &Config, files: &FileIndex) -> Tree {
         // Item row (or another file of an item already seen).
         let file_cell = table.get(row, "file");
         let ext_cell = table.get(row, "file_extension").trim_start_matches('.').to_lowercase();
-        let file = (!file_cell.is_empty()).then(|| {
+        let file = (!by_identifier && !file_cell.is_empty()).then(|| {
             let has_ext = !extension_of(file_cell).is_empty();
             let wanted = if has_ext || ext_cell.is_empty() {
                 file_cell.to_string()

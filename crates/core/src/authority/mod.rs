@@ -62,6 +62,11 @@ pub struct Cache {
     pub progress: bool,
     #[serde(skip)]
     asked: usize,
+    /// Lookups that failed this run (throttled, offline). Not saved, but not
+    /// retried either until the next run: each retry waits out LC's backoff,
+    /// which is what made every re-check take minutes.
+    #[serde(skip)]
+    failed: HashMap<String, String>,
 }
 
 impl Cache {
@@ -80,9 +85,14 @@ impl Cache {
         Self::default()
     }
 
-    /// Resolve through the cache. Network errors aren't cached.
+    /// Network lookups made this run.
     pub fn asked(&self) -> usize {
         self.asked
+    }
+
+    /// Forget this run's failed lookups, so the next check tries them again.
+    pub fn retry_failed(&mut self) {
+        self.failed.clear();
     }
 
     pub fn resolve(&mut self, auth: &dyn Authority, value: &str) -> Result<Option<Resolved>> {
@@ -90,11 +100,20 @@ impl Cache {
         if let Some(hit) = self.entries.get(&key) {
             return Ok(hit.clone());
         }
+        if let Some(e) = self.failed.get(&key) {
+            anyhow::bail!("{e} (not retried until the next re-read)");
+        }
+        self.asked += 1;
         if self.progress {
-            self.asked += 1;
             eprint!("\r  authority lookups at id.loc.gov: {}   ", self.asked);
         }
-        let got = auth.resolve(value)?;
+        let got = match auth.resolve(value) {
+            Ok(g) => g,
+            Err(e) => {
+                self.failed.insert(key, format!("{e:#}"));
+                return Err(e);
+            }
+        };
         self.entries.insert(key, got.clone());
         self.dirty = true;
         Ok(got)

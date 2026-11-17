@@ -38,6 +38,7 @@ pub fn main(cli: Cli) -> Result<()> {
             out: cli.out.clone().map(PathBuf::from),
             collection_title: cli.collection_title.clone(),
             accept_suggestions: cli.accept_suggestions,
+            files_by_identifier: cli.files_by_identifier,
         })?;
         if let Some(tui::Outcome::Ingest { cfg, dir }) = outcome {
             return run::run_bundle(&cfg, &dir, false);
@@ -64,6 +65,7 @@ pub fn main(cli: Cli) -> Result<()> {
             access_dir: cli.access_dir.clone().map(PathBuf::from),
             collection_title: cli.collection_title.clone(),
             offline: cli.offline,
+            files_by_identifier: cli.files_by_identifier,
         },
     )?;
     session.progress = true;
