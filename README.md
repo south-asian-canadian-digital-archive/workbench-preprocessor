@@ -48,9 +48,19 @@ Re-run it to update. From source: `cargo build --release`.
   re-checked with what's already fetched from the site (about a second), and the decisions already made carry over, following each row by its identifier, so rows added or removed in the
   sheet don't move a fix onto another item. Collections and series already on the site are added to, and items already there are left out
   (identifiers are unique), so overlapping or repeated subsets just ingest what's new.
-- **Ingesting** (`i`, `organise ingest`, `--ingest`) streams Workbench's output live, the items secondary task's
-  too, with a progress bar pinned to the bottom: step n of N, records done out of the step's CSV rows, time so far
-  and roughly how long is left. Each step's full log is in `g/logs/organise/<bundle>-<step>.log`.
+- **Ingesting** (`i`, `organise ingest`, `--ingest`) opens its own screen: Workbench's output (the items secondary
+  task's too) in a pane you can scroll while it runs (wheel, ↑↓, PgUp/PgDn; End follows again), and a progress bar
+  pinned to the bottom row: step n of N, records done out of the step's CSV rows, time so far and roughly how long
+  is left. `q` stops it (after a y/n: what Workbench already created stays, rollback files are in `g/rollback/`).
+  - When it finishes: a stats panel - time, created, skipped and failed per step, totals, and links to the
+    collections (`o` opens one). The new nodes are listed in `g/logs/organise/<bundle>-new-nodes.csv`.
+  - When Workbench fails: an error panel with the error and the traceback; `c` copies a debug report (versions,
+    site, the failing step, traceback, every error line, the step's config with any username/password blanked,
+    its CSV's header and first rows) to paste into an issue or an LLM, and saves it as
+    `<bundle>-error-report.txt`.
+  - Closing leaves a summary in the terminal; everything the screen showed is in `<bundle>-output.log`, and each
+    step's own Workbench log in `<bundle>-<step>.log` (all in `g/logs/organise/`). Without a terminal (a pipe, a
+    log) it prints plain lines instead.
 - **Temporary files:** `c` on the first screen lists what organise keeps in its cache folder (downloaded Google
   Sheets, the id.loc.gov lookup cache) with sizes, and deletes them on Enter. Nothing is cleaned automatically.
   Bundles, logs, rollback files and the id map are never touched - they record what was ingested.

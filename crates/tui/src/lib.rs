@@ -21,6 +21,7 @@ use ratatui::layout::Rect;
 use ratatui::Terminal;
 pub mod ingest;
 pub use ingest::ingest;
+mod clipboard;
 
 use sacda::bundle;
 use sacda::config::Config;

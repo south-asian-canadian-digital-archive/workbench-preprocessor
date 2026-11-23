@@ -47,39 +47,42 @@ fn rows_in(dir: &Path, step: &Step) -> usize {
     n
 }
 
-/// `uv run --project <workbench> python workbench --config <cfg>`, from the
-/// workbench folder, streaming its output. Workbench exits 0 even when a node
-/// or media fails, so its `ERROR` lines are counted and returned too.
-fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(bool, Vec<String>)> {
+/// `uv run --project <workbench> python workbench --config <cfg> [--check]`,
+/// from the workbench folder, handing each line of its output (stdout and
+/// stderr, in the order they land) to `line`. Returns whether it exited 0.
+/// If the job this thread works for is cancelled (the ingest screen's stop),
+/// Workbench is killed and this returns an error.
+fn spawn_workbench(cfg: &Config, config: &Path, check: bool, line: &mut dyn FnMut(String)) -> Result<bool> {
     use std::io::{BufRead, BufReader};
+    use std::sync::mpsc::RecvTimeoutError;
     let root = cfg.workbench_root();
     if !root.join("workbench").is_file() {
         bail!("no Islandora Workbench at {} (expected the `workbench` script there)", root.display());
     }
-    let mut child = Command::new("uv")
-        .arg("run")
-        .arg("--project")
-        .arg(&root)
-        .arg("python")
-        .arg("workbench")
-        .arg("--config")
-        .arg(config)
+    let mut cmd = Command::new("uv");
+    cmd.arg("run").arg("--project").arg(&root).arg("python").arg("workbench").arg("--config").arg(config);
+    if check {
+        cmd.arg("--check");
+    }
+    let mut child = cmd
         .current_dir(&root)
         // Piped, Python holds output back in big blocks: no live progress.
         .env("PYTHONUNBUFFERED", "1")
         // Piped on Windows, Python writes the ANSI code page; ask for UTF-8.
         .env("PYTHONUTF8", "1")
         .env("PYTHONIOENCODING", "utf-8")
-        .stdin(Stdio::inherit())
+        // Nothing to type into: a Workbench prompt gets end-of-input and says
+        // so, instead of waiting unseen under the ingest screen.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         // Piped too: Python's tracebacks and warnings would otherwise print
-        // under the progress bar and be missing from the error count.
+        // over the screen and be missing from the error count.
         .stderr(Stdio::piped())
         .spawn()
         .context("couldn't start `uv` - is it installed? (run `organise doctor`)")?;
     // Both pipes are read to the end on their own threads, whatever the
     // bytes are: one left unread fills up, Workbench blocks writing to it, and
-    // `wait` below never returns. Lines come back here in the order they land.
+    // `wait` below never returns.
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let pump = |pipe: Box<dyn std::io::Read + Send>, tx: std::sync::mpsc::Sender<String>| {
         std::thread::spawn(move || {
@@ -108,55 +111,57 @@ fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(
         pumps.push(pump(Box::new(err), tx.clone()));
     }
     drop(tx);
-    let mut errors = Vec::new();
-    for line in rx {
-        ev(Event::Line(&line));
-        if is_record(&line) {
-            ev(Event::Record);
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+            Ok(l) => line(l),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
         }
-        let t = line.trim_start().trim_start_matches("- ");
-        if t.starts_with("ERROR") || t.starts_with("Error:") || t.contains("Traceback") {
-            errors.push(line);
+        if crate::progress::cancelled_here() {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("stopped - Workbench was stopped partway through; what it had already created stays on the site (rollback files are in g/rollback/)");
         }
     }
     for p in pumps {
         let _ = p.join();
     }
-    let status = child.wait()?;
-    Ok((status.success(), errors))
+    Ok(child.wait()?.success())
+}
+
+fn is_error_line(line: &str) -> bool {
+    let t = line.trim_start().trim_start_matches("- ");
+    t.starts_with("ERROR") || t.starts_with("Error:") || t.contains("Traceback")
+}
+
+/// A Workbench run, streamed. Workbench exits 0 even when a node or media
+/// fails, so its `ERROR` lines are counted and returned too.
+fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(bool, Vec<String>)> {
+    let mut errors = Vec::new();
+    let ok = spawn_workbench(cfg, config, false, &mut |line| {
+        ev(Event::Line(&line));
+        if is_record(&line) {
+            ev(Event::Record);
+        }
+        if is_error_line(&line) {
+            errors.push(line);
+        }
+    })?;
+    Ok((ok, errors))
 }
 
 /// Workbench `--check` exits 0 even when it lists problems, so its output is
-/// what tells us. Capture and look for its error markers.
+/// what tells us. Captured, and only shown if it failed.
 fn workbench_check(cfg: &Config, config: &Path) -> Result<(bool, String)> {
-    let root = cfg.workbench_root();
-    let out = Command::new("uv")
-        .arg("run")
-        .arg("--project")
-        .arg(&root)
-        .arg("python")
-        .arg("workbench")
-        .arg("--config")
-        .arg(config)
-        .arg("--check")
-        .current_dir(&root)
-        // Piped, Python holds output back in big blocks: no live progress.
-        .env("PYTHONUNBUFFERED", "1")
-        .env("PYTHONUTF8", "1")
-        .env("PYTHONIOENCODING", "utf-8")
-        .output()
-        .context("couldn't start `uv` - is it installed? (run `organise doctor`)")?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let failed = !out.status.success()
-        || text.lines().any(|l| {
-            let l = l.trim_start();
-            l.starts_with("Error:") || l.starts_with("ERROR") || l.contains("Traceback")
-        });
-    Ok((!failed, text))
+    let mut text = String::new();
+    let mut failed = false;
+    let ok = spawn_workbench(cfg, config, true, &mut |line| {
+        let l = line.trim_start();
+        failed |= l.starts_with("Error:") || l.starts_with("ERROR") || l.contains("Traceback");
+        text.push_str(&line);
+        text.push('\n');
+    })?;
+    Ok((ok && !failed, text))
 }
 
 pub fn run_bundle(cfg: &Config, dir: &Path, check_only: bool) -> Result<()> {
