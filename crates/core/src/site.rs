@@ -152,6 +152,30 @@ impl Site {
         }
     }
 
+    /// The fields a vocabulary's terms have, found the way Workbench finds them
+    /// (the default form display's config dependencies). A vocabulary with no
+    /// fields of its own has no form display config and 404s.
+    pub fn term_fields(&self, vid: &str) -> Result<Vec<String>> {
+        let r = self.get(&format!(
+            "{}/entity/entity_form_display/taxonomy_term.{vid}.default?_format=json",
+            self.host()
+        ))?;
+        if r.status() == StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !r.status().is_success() {
+            bail!("{} answered {} for the fields of '{vid}'", self.host(), r.status());
+        }
+        let doc: Value = r.json()?;
+        let prefix = format!("field.field.taxonomy_term.{vid}.");
+        Ok(doc["dependencies"]["config"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| d.as_str()?.strip_prefix(&prefix).map(String::from))
+            .collect())
+    }
+
     /// Every term in a vocabulary, following JSON:API pagination.
     pub fn vocabulary(&self, vid: &str) -> Result<Vec<Term>> {
         let mut out = Vec::new();

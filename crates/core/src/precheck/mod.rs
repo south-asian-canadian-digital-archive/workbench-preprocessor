@@ -216,6 +216,9 @@ pub struct Session {
     pub files: FileIndex,
     pub opts: Options,
     vocabs: HashMap<String, Result<Vec<Term>, String>>,
+    /// The fields each vocabulary's terms have (Workbench fails on a column the
+    /// vocabulary doesn't have).
+    term_fields: HashMap<String, Result<Vec<String>, String>>,
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
     prefetched: std::collections::HashSet<String>,
@@ -266,6 +269,7 @@ impl Session {
             files,
             opts,
             vocabs: HashMap::new(),
+            term_fields: HashMap::new(),
             lang: None,
             nodes: HashMap::new(),
             prefetched: Default::default(),
@@ -300,6 +304,21 @@ impl Session {
         }
         match &self.vocabs[vid] {
             Ok(v) => Ok(v.as_slice()),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// Whether terms in `vid` have `field` on the site. Offline there's no
+    /// site to ask, and nothing is ingested, so it's assumed.
+    pub fn term_has_field(&mut self, vid: &str, field: &str) -> Result<bool, String> {
+        let Some(site) = &self.site else { return Ok(true) };
+        if !self.term_fields.contains_key(vid) {
+            self.job.say(format!("reading which fields the {vid} vocabulary has"));
+            let got = site.term_fields(vid).map_err(|e| format!("{e:#}"));
+            self.term_fields.insert(vid.to_string(), got);
+        }
+        match &self.term_fields[vid] {
+            Ok(f) => Ok(f.iter().any(|f| f == field)),
             Err(e) => Err(e.clone()),
         }
     }
@@ -395,6 +414,7 @@ impl Session {
         let _job = super::progress::enter(self.job.clone());
         // Fetches that failed (or were cancelled) last time are asked again.
         self.vocabs.retain(|_, v| v.is_ok());
+        self.term_fields.retain(|_, v| v.is_ok());
         if matches!(self.lang, Some(Err(_))) {
             self.lang = None;
         }

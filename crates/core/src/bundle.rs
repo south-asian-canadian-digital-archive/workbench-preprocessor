@@ -432,10 +432,16 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
     let mut n_terms = 0;
     for (vocab, terms) in &report.new_terms {
         let mut w = csv::Writer::from_path(dir.join(format!("terms-{vocab}.csv")))?;
-        w.write_record(["term_name", "field_authority_link"])?;
+        // Only with links: Workbench stops on a column the vocabulary lacks.
+        let links = terms.iter().any(|t| t.link.is_some());
+        w.write_record(if links { vec!["term_name", "field_authority_link"] } else { vec!["term_name"] })?;
         for t in terms {
             n_terms += 1;
-            w.write_record([t.name.clone(), t.link.as_ref().map(|l| l.workbench_cell()).unwrap_or_default()])?;
+            let mut rec = vec![t.name.clone()];
+            if links {
+                rec.push(t.link.as_ref().map(|l| l.workbench_cell()).unwrap_or_default());
+            }
+            w.write_record(rec)?;
         }
         w.flush()?;
     }

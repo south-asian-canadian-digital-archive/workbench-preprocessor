@@ -437,6 +437,37 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
         }
     }
 
+    // Workbench stops on a column the vocabulary doesn't have, so links only go
+    // to vocabularies with an authority link field.
+    for (vocab, terms) in new_terms.iter_mut() {
+        let linked = terms.iter().filter(|t| t.link.is_some()).count();
+        if linked == 0 {
+            continue;
+        }
+        match s.term_has_field(vocab, "field_authority_link") {
+            Ok(true) => {}
+            Ok(false) => {
+                for t in terms.iter_mut() {
+                    t.link = None;
+                }
+                report.findings.push(Finding::new(
+                    Warning,
+                    "terms",
+                    format!(
+                        "Workbench can't see a field_authority_link on {vocab} on {} (it reads the vocabulary's form display, \
+                         core.entity_form_display.taxonomy_term.{vocab}.default), so the new terms are created without their {linked} link(s)",
+                        s.site_name
+                    ),
+                ));
+            }
+            Err(e) => report.findings.push(Finding::new(
+                Error,
+                "terms",
+                format!("couldn't read which fields {vocab} has, so its terms can't be written safely: {e} - press r to try again"),
+            )),
+        }
+    }
+
     for (vocab, terms) in &new_terms {
         let linked = terms.iter().filter(|t| t.link.is_some()).count();
         report.findings.push(Finding::new(
