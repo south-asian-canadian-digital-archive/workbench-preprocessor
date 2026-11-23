@@ -11,6 +11,7 @@
 //! - `site`       read-only JSON:API client
 //! - `bundle`     write CSVs + configs + manifest
 //! - `run`        drive Workbench over a bundle
+//! - `fixity`     keep the checksums Workbench logs for each uploaded file
 //! - `doctor`     machine + site health check
 //! - `sheets`     Google Sheets history + per-sheet settings (files folder)
 //! - `progress`   progress + cancel handle for a check running elsewhere
@@ -20,6 +21,7 @@ pub mod bundle;
 pub mod config;
 pub mod doctor;
 pub mod edtf;
+pub mod fixity;
 pub mod input;
 pub mod precheck;
 pub mod progress;

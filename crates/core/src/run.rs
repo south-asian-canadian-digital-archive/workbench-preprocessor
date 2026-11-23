@@ -20,6 +20,8 @@ pub enum Event<'a> {
     Line(&'a str),
     /// Workbench finished one record: created, skipped as already there, or failed.
     Record,
+    /// A run's file checksums were saved: how many matched Drupal's, how many didn't.
+    Checksums { matched: usize, mismatched: usize, algorithm: &'a str, file: &'a Path },
 }
 
 /// Lines Workbench prints once per record.
@@ -204,7 +206,43 @@ pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn 
         let label = if step.covers.is_empty() { step.name.clone() } else { format!("{} (+ {})", step.name, step.covers.join(", ")) };
         ev(Event::Line(&format!("\n== {label} ==")));
         ev(Event::Stage { label: &label, index: *n, of: runs, total: rows_in(dir, step), checking: false });
-        workbench(cfg, &dir.join(&step.config), ev)
+        // Workbench logs each upload's checksums (main task and secondary tasks
+        // alike, each to its own log); keep this run's.
+        let configs: Vec<_> = std::iter::once(step.config.clone())
+            .chain(step.covers.iter().map(|c| format!("{c}.config.yml")))
+            .map(|c| dir.join(c))
+            .collect();
+        let marks = crate::fixity::mark(&configs);
+        let (ok, mut errors) = workbench(cfg, &dir.join(&step.config), ev)?;
+        let sums = crate::fixity::collect(dir, &marks);
+        if !sums.is_empty() {
+            let bundle = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".into());
+            let out = cfg.g_root.join("logs/organise").join(format!("{bundle}-checksums.csv"));
+            let bad: Vec<_> = sums.iter().filter(|c| !c.matched).collect();
+            for c in &bad {
+                let m = format!(
+                    "ERROR: checksum mismatch for {} ({}): local {} {}, Drupal {} - the upload may be damaged",
+                    c.file, c.identifier, c.algorithm, c.local, c.drupal
+                );
+                ev(Event::Line(&m));
+                errors.push(m);
+            }
+            match crate::fixity::save(&out, &sums) {
+                Ok(()) => {
+                    ev(Event::Line(&format!(
+                        "Checksums: {} file(s) checked ({}), {} matched Drupal's, {} didn't - saved to {}",
+                        sums.len(),
+                        sums[0].algorithm,
+                        sums.len() - bad.len(),
+                        bad.len(),
+                        out.display()
+                    )));
+                    ev(Event::Checksums { matched: sums.len() - bad.len(), mismatched: bad.len(), algorithm: &sums[0].algorithm, file: &out });
+                }
+                Err(e) => ev(Event::Line(&format!("ERROR: couldn't save the checksums to {}: {e:#}", out.display()))),
+            }
+        }
+        Ok((ok, errors))
     };
     if !check_only {
         for step in &terms {

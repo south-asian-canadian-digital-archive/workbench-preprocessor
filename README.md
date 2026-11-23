@@ -52,8 +52,12 @@ Re-run it to update. From source: `cargo build --release`.
   task's too) in a pane you can scroll while it runs (wheel, ↑↓, PgUp/PgDn; End follows again), and a progress bar
   pinned to the bottom row: step n of N, records done out of the step's CSV rows, time so far and roughly how long
   is left. `q` stops it (after a y/n: what Workbench already created stays, rollback files are in `g/rollback/`).
-  - When it finishes: a stats panel - time, created, skipped and failed per step, totals, and links to the
-    collections (`o` opens one). The new nodes are listed in `g/logs/organise/<bundle>-new-nodes.csv`.
+  - When it finishes: a stats panel - time, created, skipped and failed per step, totals, checksums, and links to
+    the collections (`o` opens one). The new nodes are listed in `g/logs/organise/<bundle>-new-nodes.csv`.
+  - **Checksums:** Workbench checks every uploaded file against Drupal (`fixity_algorithm: md5` in the items
+    config) but only writes it to its own log; after each step organise reads the new part of the logs and adds a
+    row per file (identifier, file, algorithm, local and Drupal checksum, match/MISMATCH, when) to
+    `g/logs/organise/<bundle>-checksums.csv`. A mismatch is an error line and counts against the ingest.
   - When Workbench fails: an error panel with the error and the traceback; `c` copies a debug report (versions,
     site, the failing step, traceback, every error line, the step's config with any username/password blanked,
     its CSV's header and first rows) to paste into an issue or an LLM, and saves it as

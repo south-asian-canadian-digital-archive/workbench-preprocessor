@@ -26,6 +26,7 @@ enum Msg {
     Stage { label: String, index: usize, of: usize, total: usize, checking: bool },
     Line(String),
     Record,
+    Checksums { matched: usize, mismatched: usize, algorithm: String, file: PathBuf },
     Done(Result<(), String>),
 }
 
@@ -50,6 +51,9 @@ pub fn ingest(cfg: &Config, dir: &Path, check_only: bool) -> anyhow::Result<()> 
                 }
                 Event::Line(l) => send(Msg::Line(l.to_string())),
                 Event::Record => send(Msg::Record),
+                Event::Checksums { matched, mismatched, algorithm, file } => {
+                    send(Msg::Checksums { matched, mismatched, algorithm: algorithm.to_string(), file: file.to_path_buf() })
+                }
             });
             send(Msg::Done(result.map_err(|e| format!("{e:#}"))));
         });
@@ -210,6 +214,8 @@ struct Screen {
     collections: Vec<String>,
     /// The stats panel is open (it opens when the ingest finishes).
     show_stats: bool,
+    /// File checksums: (matched, mismatched, algorithm, where they're saved).
+    checksums: Option<(usize, usize, String, PathBuf)>,
 }
 
 const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -226,6 +232,7 @@ impl Screen {
             nodes: Vec::new(),
             collections: sacda::bundle::Manifest::read(dir).map(|m| m.collections).unwrap_or_default(),
             show_stats: false,
+            checksums: None,
             bundle: dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".into()),
             lines: Vec::new(),
             back: 0,
@@ -364,6 +371,10 @@ impl Screen {
                 self.lines.push(clean(&l));
             }
             Msg::Record => self.done_records += 1,
+            Msg::Checksums { matched, mismatched, algorithm, file } => {
+                let (m, b) = self.checksums.as_ref().map(|c| (c.0, c.1)).unwrap_or((0, 0));
+                self.checksums = Some((m + matched, b + mismatched, algorithm, file));
+            }
             Msg::Done(r) => {
                 self.finished = Some(self.started.elapsed());
                 self.close_step();
@@ -531,6 +542,9 @@ impl Screen {
                 "{new_nodes} new node(s), {:.1}s each on average",
                 ingest.as_secs_f64() / new_nodes as f64
             ));
+        }
+        if let Some((m, b, algo, file)) = &self.checksums {
+            out.push(format!("Checksums ({algo}): {m} matched Drupal's{} - {}", if *b > 0 { format!(", {b} MISMATCHED") } else { String::new() }, file.display()));
         }
         for (id, url, new) in self.collection_links() {
             out.push(format!("Collection {id}{}: {url}", if new { " (new)" } else { "" }));
