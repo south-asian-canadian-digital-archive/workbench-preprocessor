@@ -59,14 +59,14 @@ pub fn ingest(cfg: &Config, dir: &Path, check_only: bool) -> anyhow::Result<()> 
         });
     }
 
-    let mut screen = Screen::new(dir, cfg);
+    let mut screen = Screen::new(dir, &cfg.g_root, &cfg.workbench_root());
     {
         let _guard = TermGuard::enter()?;
         let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
         screen.run(&mut term, &rx, &job)?;
     }
     // The terminal is back: leave a summary in its scrollback.
-    let saved = screen.save(cfg);
+    let saved = screen.save();
     for l in screen.summary() {
         println!("{l}");
     }
@@ -201,7 +201,9 @@ struct Screen {
     page: usize,
     /// The bundle, for the error report.
     dir: PathBuf,
-    cfg: Config,
+    /// g/ (for logs/organise/) and the Workbench checkout (for the report).
+    g_root: PathBuf,
+    workbench_root: PathBuf,
     /// The error panel is open (it opens when Workbench fails; `v` hides it).
     show_error: bool,
     /// What happened to the last `c`.
@@ -221,10 +223,11 @@ struct Screen {
 const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 impl Screen {
-    fn new(dir: &Path, cfg: &Config) -> Self {
+    fn new(dir: &Path, g_root: &Path, workbench_root: &Path) -> Self {
         Self {
             dir: dir.to_path_buf(),
-            cfg: cfg.clone(),
+            g_root: g_root.to_path_buf(),
+            workbench_root: workbench_root.to_path_buf(),
             show_error: false,
             note: None,
             stage_from: 0,
@@ -575,7 +578,7 @@ impl Screen {
         if !self.nodes.iter().any(|n| n.new) {
             return Ok(None);
         }
-        let p = self.cfg.g_root.join("logs/organise").join(format!("{}-new-nodes.csv", self.bundle));
+        let p = self.g_root.join("logs/organise").join(format!("{}-new-nodes.csv", self.bundle));
         let mut w = csv::Writer::from_path(&p)?;
         w.write_record(["identifier", "title", "url"])?;
         for n in self.nodes.iter().filter(|n| n.new) {
@@ -641,7 +644,7 @@ impl Screen {
         r.push_str("I'm ingesting into an Islandora (Drupal) site with Islandora Workbench, run by `organise` (a tool that\n");
         r.push_str("turns a spreadsheet into Workbench CSVs + configs). A Workbench step failed. Explain the cause and how to fix it.\n\n");
         r.push_str(&format!("organise {} on {} {}\n", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH));
-        let root = self.cfg.workbench_root();
+        let root = self.workbench_root.clone();
         let rev = std::process::Command::new("git")
             .arg("-C")
             .arg(&root)
@@ -710,7 +713,7 @@ impl Screen {
                 }
             }
         }
-        r.push_str(&format!("\nFull output: {}\n", self.cfg.g_root.join("logs/organise").join(format!("{}-output.log", self.bundle)).display()));
+        r.push_str(&format!("\nFull output: {}\n", self.g_root.join("logs/organise").join(format!("{}-output.log", self.bundle)).display()));
         r
     }
 
@@ -718,7 +721,7 @@ impl Screen {
     fn copy_report(&self) -> String {
         let text = self.report();
         let saved = (|| -> std::io::Result<PathBuf> {
-            let dir = self.cfg.g_root.join("logs/organise");
+            let dir = self.g_root.join("logs/organise");
             std::fs::create_dir_all(&dir)?;
             let p = dir.join(format!("{}-error-report.txt", self.bundle));
             std::fs::write(&p, &text)?;
@@ -771,8 +774,8 @@ impl Screen {
     }
 
     /// Everything the screen showed, in g/logs/organise/<bundle>-output.log.
-    fn save(&self, cfg: &Config) -> std::io::Result<PathBuf> {
-        let dir = cfg.g_root.join("logs/organise");
+    fn save(&self) -> std::io::Result<PathBuf> {
+        let dir = self.g_root.join("logs/organise");
         std::fs::create_dir_all(&dir)?;
         let p = dir.join(format!("{}-output.log", self.bundle));
         let mut text = self.lines.join("\n");
@@ -837,14 +840,16 @@ fn fmt_dur(d: Duration) -> String {
 mod tests {
     use super::*;
 
-    fn test_cfg() -> Config {
-        let g = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        Config::load_from(&g).expect("g/config/sacda.toml")
+    /// A screen over a bundle that isn't there, with g/ in a temp folder: no
+    /// config needed, so these run on CI without g/.
+    fn screen() -> Screen {
+        let g = std::env::temp_dir().join("organise-ingest-tests");
+        Screen::new(Path::new("ingest-x-dev"), &g, &g)
     }
 
     #[test]
     fn report_has_the_traceback_and_no_passwords() {
-        let mut s = Screen::new(Path::new("ingest-x-dev"), &test_cfg());
+        let mut s = screen();
         s.take(Msg::Line("before".into()));
         s.take(Msg::Stage { label: "terms-sacda_thesaurus".into(), index: 3, of: 6, total: 4, checking: false });
         for l in ["OK, connection verified.", "Traceback (most recent call last)", "  frame", "KeyError: 'field_authority_link'"] {
@@ -877,7 +882,7 @@ mod tests {
 
     #[test]
     fn stats_count_each_step_and_link_the_collection() {
-        let mut s = Screen::new(Path::new("ingest-x-dev"), &test_cfg());
+        let mut s = screen();
         s.collections = vec!["2099_01".into()];
         s.take(Msg::Stage { label: "check components".into(), index: 1, of: 3, total: 0, checking: true });
         s.take(Msg::Line(r#"Node for "nope" (record 1) created at https://h/node/1."#.into()));
@@ -904,7 +909,7 @@ mod tests {
 
     #[test]
     fn scrolled_up_view_stays_put() {
-        let mut s = Screen::new(Path::new("ingest-x-dev"), &test_cfg());
+        let mut s = screen();
         s.take(Msg::Line("a".into()));
         s.back = 2;
         s.take(Msg::Line("b".into()));
@@ -916,7 +921,7 @@ mod tests {
 
     #[test]
     fn summary_keeps_steps_and_errors() {
-        let mut s = Screen::new(Path::new("ingest-x-dev"), &test_cfg());
+        let mut s = screen();
         for l in ["Bundle for dev (h): 1 component(s)", "noise", "== components ==", "  terms-subject: ok", "ERROR: node not created", "more noise"] {
             s.take(Msg::Line(l.into()));
         }
