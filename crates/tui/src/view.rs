@@ -216,7 +216,7 @@ fn header(f: &mut Frame, app: &App, area: Rect) {
         let e = r.report.count(Severity::Error);
         let w = r.report.count(Severity::Warning);
         spans.push(Span::raw(format!("   {}", short(&r.input_name, 40))));
-        if let Some(sub) = app.subset_for(&r.input_name) {
+        if let Ok(Some(sub)) = app.subset_for(&r.input_name) {
             spans.push(Span::styled(format!("  only {}", sub.describe()), Style::new().fg(Color::Yellow).bold()));
         }
         spans.push(Span::raw("   "));
@@ -411,14 +411,12 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::raw("Rows "), Span::styled("(s to change):", Style::new().fg(Color::DarkGray))]));
-    let subset = selected.as_deref().and_then(|s| app.subset_for(s));
-    lines.push(Line::from(Span::styled(
-        match &subset {
-            Some(s) => format!("  only {} (+ their collection/series rows)", s.describe()),
-            None => "  the whole sheet".to_string(),
-        },
-        if subset.is_some() { Style::new().fg(Color::Yellow).bold() } else { Style::new().fg(ACCENT) },
-    )));
+    let subset = selected.as_deref().map(|s| app.subset_for(s)).unwrap_or(Ok(None));
+    lines.push(Line::from(match &subset {
+        Ok(Some(s)) => Span::styled(format!("  only {} (+ their collection/series rows)", s.describe()), Style::new().fg(Color::Yellow).bold()),
+        Ok(None) => Span::styled("  the whole sheet", Style::new().fg(ACCENT)),
+        Err(_) => Span::styled("  not valid - press s to change them", sev_style(Severity::Error)),
+    }));
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::bordered().title(" Where ")), cols[1]);
 }
 

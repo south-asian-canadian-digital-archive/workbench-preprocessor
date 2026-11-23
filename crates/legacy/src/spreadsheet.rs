@@ -80,7 +80,7 @@ fn workbook_to_csv(path: &Path, sheet_name: Option<&str>) -> Result<Vec<u8>> {
         .with_context(|| format!("Failed to read worksheet '{selected}'"))?;
     let mut writer = WriterBuilder::new().from_writer(Vec::new());
     for row in range.rows() {
-        writer.write_record(row.iter().map(ToString::to_string))?;
+        writer.write_record(row.iter().map(cell_text))?;
     }
     Ok(writer.into_inner()?)
 }
@@ -92,4 +92,24 @@ pub fn csv_reader_from_path(
     Ok(csv::Reader::from_reader(Cursor::new(csv_bytes_from_path(
         path, sheet_name,
     )?)))
+}
+
+/// A cell as text. Date cells become ISO dates (`1913-05-04`, or with the time
+/// when there is one): their plain text is Excel's serial number, and one
+/// before 1927 (`4872`) would pass as a year.
+fn cell_text(cell: &calamine::Data) -> String {
+    if let calamine::Data::DateTime(d) = cell {
+        if d.is_datetime() {
+            if let Some(dt) = d.as_datetime() {
+                use chrono::{Datelike, Timelike};
+                let date = format!("{:04}-{:02}-{:02}", dt.year(), dt.month(), dt.day());
+                return if dt.time() == chrono::NaiveTime::MIN {
+                    date
+                } else {
+                    format!("{date}T{:02}:{:02}:{:02}", dt.hour(), dt.minute(), dt.second())
+                };
+            }
+        }
+    }
+    cell.to_string()
 }

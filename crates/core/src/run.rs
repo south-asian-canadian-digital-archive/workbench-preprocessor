@@ -1,6 +1,8 @@
-//! Runs a bundle's steps through Islandora Workbench, in order: every step's
-//! `--check` first (Workbench's own validation against the live site), then the
-//! real runs. A failed check stops everything before anything is written.
+//! Runs a bundle's steps through Islandora Workbench. New-term jobs are checked
+//! and run first, because the component and item checks look those terms up;
+//! then every other step is checked, then run. A failed check stops what comes
+//! after it, but terms created before it stay on the site (their rollback
+//! files are in g/rollback/).
 
 use super::bundle::{Manifest, Step};
 use super::config::Config;
@@ -65,6 +67,9 @@ fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(
         .current_dir(&root)
         // Piped, Python holds output back in big blocks: no live progress.
         .env("PYTHONUNBUFFERED", "1")
+        // Piped on Windows, Python writes the ANSI code page; ask for UTF-8.
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -72,7 +77,19 @@ fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(
         .context("couldn't start `uv` - is it installed? (run `organise doctor`)")?;
     let mut errors = Vec::new();
     if let Some(out) = child.stdout.take() {
-        for line in BufReader::new(out).lines().map_while(Result::ok) {
+        // Read to the end whatever the bytes are: stopping early would leave
+        // Workbench blocked on a full pipe and `wait` below would never return.
+        let mut reader = BufReader::new(out);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+            let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
             ev(Event::Line(&line));
             if is_record(&line) {
                 ev(Event::Record);
@@ -103,6 +120,8 @@ fn workbench_check(cfg: &Config, config: &Path) -> Result<(bool, String)> {
         .current_dir(&root)
         // Piped, Python holds output back in big blocks: no live progress.
         .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
         .output()
         .context("couldn't start `uv` - is it installed? (run `organise doctor`)")?;
     let text = format!(
@@ -169,7 +188,14 @@ pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn 
         }
     }
     for step in &rest {
-        check(ev, step, &mut n)?;
+        let checked = check(ev, step, &mut n);
+        if !check_only && !terms.is_empty() {
+            checked.map_err(|e| {
+                anyhow::anyhow!("{e:#} - but the new terms were already created on the site (rollback files for them are in g/rollback/)")
+            })?;
+        } else {
+            checked?;
+        }
     }
     if check_only {
         say(ev, "\nAll checks passed. Run without --check-only to ingest.".into());
@@ -204,6 +230,6 @@ fn check_step(cfg: &Config, dir: &Path, config: &str, name: &str, ev: &mut dyn F
         for l in text.lines() {
             ev(Event::Line(l));
         }
-        bail!("Workbench's check failed for {name}; nothing was ingested")
+        bail!("Workbench's check failed for {name}; nothing from it or after it was ingested")
     }
 }

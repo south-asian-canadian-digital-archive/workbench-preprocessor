@@ -257,6 +257,9 @@ impl Config {
     }
 
     pub fn load_from(g_root: &Path) -> Result<Self> {
+        // Absolute: the workbench root is its parent, and Workbench runs from
+        // there, so a relative g/ (`--g g`) would point nowhere.
+        let g_root = &dunce::canonicalize(g_root).unwrap_or_else(|_| g_root.to_path_buf());
         let sacda_path = g_root.join("config/sacda.toml");
         let schema_path = g_root.join("config/schema.toml");
         let sacda: SacdaToml = toml::from_str(

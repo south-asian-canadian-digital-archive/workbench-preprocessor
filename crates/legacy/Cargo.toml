@@ -8,6 +8,7 @@ edition.workspace = true
 anyhow.workspace = true
 csv.workspace = true
 calamine.workspace = true
+chrono = { version = "0.4", default-features = false }
 serde.workspace = true
 reqwest.workspace = true
 url.workspace = true

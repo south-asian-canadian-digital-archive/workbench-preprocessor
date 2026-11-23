@@ -160,9 +160,30 @@ where
     if key.is_empty() {
         return None;
     }
-    let mut hits = candidates.into_iter().filter(|c| letters(c) == key);
+    // Accents the sheet typed are meant: `Ḍal` and `Dal` are different words.
+    // Only a value typed without them takes the accented term (`Giddha` ->
+    // `Giddhā`); anything else is left to the "did you mean" suggestions.
+    let marked = has_marks(input);
+    let mut hits = candidates
+        .into_iter()
+        .filter(|c| letters(c) == key && (!marked || accented(c) == accented(input)));
     let first = hits.next()?;
     hits.all(|h| h == first).then_some(first)
+}
+
+/// Does the text carry accents (combining marks once decomposed)?
+fn has_marks(s: &str) -> bool {
+    use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+    s.nfd().any(is_combining_mark)
+}
+
+/// Like `letters`, but keeping the accents.
+fn accented(s: &str) -> String {
+    use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+    s.nfd()
+        .filter(|c| (c.is_alphanumeric() || is_combining_mark(*c)) && !('\u{02B0}'..='\u{02FF}').contains(c))
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Letters and digits only, lower-cased, accents and modifier letters dropped
@@ -233,6 +254,9 @@ mod tests {
         assert_eq!(same_letters("Isma'ilism or Ismaili Muslims", c), Some("Ismailism or Ismaili Muslims"));
         assert_eq!(same_letters("Surrey", c), None);
         assert_eq!(same_letters("Giddha (Dance)", ["Giddhā (Dance)"]), Some("Giddhā (Dance)"));
+        // Accents typed in the sheet are meant: a retroflex isn't a dental.
+        assert_eq!(same_letters("Ḍal", ["Dal"]), None);
+        assert_eq!(same_letters("Naṭ", ["Nat", "Naṭ"]), Some("Naṭ"));
         assert_eq!(closest("Sangat", ["Langar"]), None);
         assert!(headings_agree("Holi", "Holī (Hindu festival)"));
         assert!(headings_agree("Diwali", "Dīvālī (Hindu festival)"));

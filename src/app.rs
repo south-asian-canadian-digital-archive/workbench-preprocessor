@@ -20,6 +20,13 @@ pub fn main(cli: Cli) -> Result<()> {
         }
         Some(Command::Ingest { bundle, check_only }) => {
             let cfg = Config::load(g)?;
+            // The bundle names its site: one marked confirm = true (prod) needs
+            // the same typed confirmation as opening a sheet for it.
+            let m = bundle::Manifest::read(Path::new(&bundle))?;
+            let (site_name, site_cfg) = cfg.site(Some(&m.site))?;
+            if site_cfg.confirm && !check_only && !cli.yes {
+                confirm_typed(&site_name, &site_cfg.host)?;
+            }
             return tui::ingest(&cfg, Path::new(&bundle), check_only);
         }
         _ => {}

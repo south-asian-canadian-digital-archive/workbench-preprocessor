@@ -11,7 +11,7 @@ fn test_google_sheets_url_parsing_comprehensive() -> Result<(), Box<dyn std::err
     let test_cases = vec![
         // Standard edit URLs
         (
-            "https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit#gid=0",
+            "https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit",
             "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
         ),
         (
@@ -25,7 +25,7 @@ fn test_google_sheets_url_parsing_comprehensive() -> Result<(), Box<dyn std::err
         ),
         // Complex sheet IDs
         (
-            "https://docs.google.com/spreadsheets/d/1Bxi-MV_s0XRA5nF-MdKv_BdBZjgm-UUqptlbs74OgvE2upms/edit#gid=123",
+            "https://docs.google.com/spreadsheets/d/1Bxi-MV_s0XRA5nF-MdKv_BdBZjgm-UUqptlbs74OgvE2upms/edit",
             "1Bxi-MV_s0XRA5nF-MdKv_BdBZjgm-UUqptlbs74OgvE2upms"
         ),
     ];
@@ -104,15 +104,24 @@ fn test_google_sheets_url_error_cases() {
 /// Test URL normalization and cleaning
 #[test]
 fn test_google_sheets_url_normalization() -> Result<(), Box<dyn std::error::Error>> {
-    // All these should produce the same result
+    // Without a tab, these all export the first tab
     let equivalent_urls = vec![
         "https://docs.google.com/spreadsheets/d/test123/edit",
-        "https://docs.google.com/spreadsheets/d/test123/edit#gid=0",
         "https://docs.google.com/spreadsheets/d/test123/edit?usp=sharing",
-        "https://docs.google.com/spreadsheets/d/test123/edit#gid=456",
         "https://docs.google.com/spreadsheets/d/test123/edit?usp=sharing&other=param",
-        "https://docs.google.com/spreadsheets/d/test123/edit?usp=sharing#gid=789",
     ];
+    // A tab in the link (#gid= or ?gid=) is the tab exported
+    for (url, gid) in [
+        ("https://docs.google.com/spreadsheets/d/test123/edit#gid=0", "0"),
+        ("https://docs.google.com/spreadsheets/d/test123/edit#gid=456", "456"),
+        ("https://docs.google.com/spreadsheets/d/test123/edit?usp=sharing#gid=789", "789"),
+        ("https://docs.google.com/spreadsheets/d/test123/edit?gid=42#gid=42", "42"),
+    ] {
+        assert_eq!(
+            CsvModifier::google_sheets_to_csv_url(url)?,
+            format!("https://docs.google.com/spreadsheets/d/test123/export?format=csv&gid={gid}")
+        );
+    }
 
     let expected_result = "https://docs.google.com/spreadsheets/d/test123/export?format=csv";
 

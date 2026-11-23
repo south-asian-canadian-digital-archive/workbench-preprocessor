@@ -457,7 +457,7 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
                 })
                 .collect();
             let can_add = stubs.len() == unmatched.len();
-            let root = std::fs::canonicalize(&s.files.root).unwrap_or(s.files.root.clone());
+            let root = dunce::canonicalize(&s.files.root).unwrap_or(s.files.root.clone());
             let names: Vec<(usize, String)> = unmatched
                 .iter()
                 .map(|p| (0, p.strip_prefix(&root).unwrap_or(p).to_string_lossy().to_string()))

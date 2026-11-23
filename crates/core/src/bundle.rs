@@ -4,7 +4,7 @@
 
 use super::config::{Config, FieldDef};
 use super::edtf;
-use super::precheck::{vocab_render, Fix, Gap, Report, Severity, Val};
+use super::precheck::{vocab_render, Fix, Gap, Report, Severity};
 use super::source::Table;
 use super::tree::{Kind, Node};
 use anyhow::{bail, Context, Result};
@@ -98,8 +98,12 @@ impl Ctx<'_> {
         if def.is_taxonomy() {
             if let Some(vals) = self.report.values.get(&(row, col.to_string())) {
                 let rule = self.cfg.sacda.fields.get(col);
+                // The same non-empty pieces the check resolved, so each value
+                // keeps its own relator (`a||b` has no third value).
                 let rendered: Vec<String> = raw
                     .split(self.subdelim.as_str())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
                     .zip(vals.iter())
                     .filter_map(|(raw_v, v)| {
                         // Keep an explicit relator from the sheet, else the field's default.
@@ -109,10 +113,7 @@ impl Ctx<'_> {
                             .and_then(|r| r.split_once(':'))
                             .map(|(code, _)| format!("relators:{code}"))
                             .or_else(|| rule.and_then(|r| r.relator.clone()));
-                        match v {
-                            Val::Tid(t) => Some(t.clone()),
-                            _ => vocab_render(v, def, relator.as_deref()),
-                        }
+                        vocab_render(v, def, relator.as_deref())
                     })
                     .collect();
                 return rendered.join(&self.subdelim);
@@ -169,7 +170,7 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
     }
     let (_, site_cfg) = cfg.site(Some(site))?;
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let dir = fs::canonicalize(dir)?;
+    let dir = dunce::canonicalize(dir)?;
     let ctx = Ctx {
         cfg,
         table,

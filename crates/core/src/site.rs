@@ -91,6 +91,15 @@ impl Site {
         unreachable!()
     }
 
+    /// JSON:API's next page, rebuilt against our own host: the link is from the
+    /// response, and behind a proxy it can name http:// or an internal host -
+    /// the credentials go only where they were configured for.
+    fn next_page(&self, doc: &Value) -> Option<String> {
+        let href = doc["links"]["next"]["href"].as_str()?;
+        let at = href.find("/jsonapi/")?;
+        Some(format!("{}{}", self.host(), &href[at..]))
+    }
+
     fn get_json(&self, url: &str) -> Result<Value> {
         let r = self.get(url)?;
         let status = r.status();
@@ -183,7 +192,7 @@ impl Site {
                     authority_uris: uris,
                 });
             }
-            url = doc["links"]["next"]["href"].as_str().map(String::from);
+            url = self.next_page(&doc);
         }
         Ok(out)
     }
@@ -220,7 +229,7 @@ impl Site {
                         },
                     ));
                 }
-                url = doc["links"]["next"]["href"].as_str().map(String::from);
+                url = self.next_page(&doc);
             }
         }
         Ok(out)

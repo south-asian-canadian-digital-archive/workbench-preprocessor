@@ -123,7 +123,13 @@ impl FileIndex {
         let mut by_stem: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let exists = root.is_dir();
         let mut stack = vec![root.to_path_buf()];
+        // Folders already walked, by real path: a link back up the tree
+        // (synced folders have them) would otherwise loop forever.
+        let mut seen = std::collections::HashSet::new();
         while let Some(dir) = stack.pop() {
+            if !seen.insert(dunce::canonicalize(&dir).unwrap_or(dir.clone())) {
+                continue;
+            }
             let Ok(entries) = fs::read_dir(&dir) else { continue };
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -135,7 +141,7 @@ impl FileIndex {
                 if name.as_deref().is_some_and(|n| n.starts_with('.')) {
                     continue;
                 }
-                let abs = fs::canonicalize(&p).unwrap_or(p.clone());
+                let abs = dunce::canonicalize(&p).unwrap_or(p.clone());
                 if let Some(n) = name {
                     by_name.entry(n).or_default().push(abs.clone());
                 }
@@ -143,6 +149,11 @@ impl FileIndex {
                     by_stem.entry(s.to_string_lossy().to_lowercase()).or_default().push(abs);
                 }
             }
+        }
+        // The same answer on every machine, whatever order the folder lists in.
+        for v in by_name.values_mut().chain(by_stem.values_mut()) {
+            v.sort();
+            v.dedup();
         }
         Self {
             by_name,
@@ -303,9 +314,17 @@ pub fn build_with(table: &Table, cfg: &Config, files: &FileIndex, by_identifier:
             };
             let extension = if has_ext { extension_of(file_cell) } else { ext_cell.clone() };
             let scope = parent_of(&id).unwrap_or_default();
+            let path = files.find(&wanted, &scope);
+            // Found by stem (a.jpg for a.tif): the model and media type come
+            // from the file that's actually there.
+            let extension = path
+                .as_ref()
+                .and_then(|p| p.extension())
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or(extension);
             FileRef {
                 row: i,
-                path: files.find(&wanted, &scope),
+                path,
                 wanted,
                 extension,
             }

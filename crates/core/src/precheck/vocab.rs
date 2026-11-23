@@ -81,7 +81,12 @@ fn parse_value(raw: &str, def: &FieldDef) -> Parsed {
 pub fn render(val: &Val, def: &FieldDef, relator: Option<&str>) -> Option<String> {
     let (vocab, name) = match val {
         Val::Existing { vocab, name } | Val::New { vocab, name, .. } => (vocab, name),
-        Val::Tid(t) => return Some(t.clone()),
+        Val::Tid(t) => {
+            return Some(match (def.kind.as_str(), relator) {
+                ("typed_relation", Some(r)) => format!("{r}:{t}"),
+                _ => t.clone(),
+            })
+        }
         Val::Blocked => return None,
     };
     let base = if def.targets.len() > 1 || def.kind == "typed_relation" {
@@ -159,10 +164,27 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     rewritten.push(raw.to_string());
                     continue;
                 }
-                if p.name.bytes().all(|b| b.is_ascii_digit()) {
-                    vals.push(Val::Tid(p.name.clone()));
+                if p.name.is_empty() {
+                    report.findings.push(
+                        Finding::new(Error, "terms", format!("{col}: \"{raw}\" has no name after its prefix"))
+                            .at(row.line, id.clone()),
+                    );
+                    vals.push(Val::Blocked);
                     rewritten.push(raw.to_string());
                     continue;
+                }
+                // A number is a term ID only if a vocabulary the field takes has
+                // that ID; otherwise it's a name ("1947" as a subject).
+                if p.name.bytes().all(|b| b.is_ascii_digit()) {
+                    let targets = p.vocab.clone().map(|v| vec![v]).unwrap_or_else(|| def.targets.clone());
+                    let known = targets
+                        .iter()
+                        .any(|v| s.vocabulary(v).is_ok_and(|terms| terms.iter().any(|t| t.tid == p.name)));
+                    if known {
+                        vals.push(Val::Tid(p.name.clone()));
+                        rewritten.push(raw.to_string());
+                        continue;
+                    }
                 }
 
                 // An authority identifier in the sheet: look up its heading.
@@ -289,6 +311,26 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                         .new_term_vocab(&col, &site_cfg)
                         .unwrap_or_else(|| def.targets.first().cloned().unwrap_or_default()),
                 };
+                // A new term has to go somewhere the field can point at, or the
+                // item would link to nothing (or to a same-named term elsewhere).
+                if !def.targets.is_empty() && !def.targets.contains(&new_vocab) {
+                    report.findings.push(
+                        Finding::new(
+                            Error,
+                            "terms",
+                            format!(
+                                "{col}: \"{}\" isn't on the site, and a new term would go to {new_vocab}, which {col} can't use \
+                                 (it takes {}) - fix the vocabulary for this field in config/sacda.toml",
+                                p.name,
+                                def.targets.join(", ")
+                            ),
+                        )
+                        .at(row.line, id.clone()),
+                    );
+                    vals.push(Val::Blocked);
+                    rewritten.push(raw.to_string());
+                    continue;
+                }
                 let locked = s.cfg.protected_vocabularies.contains(&new_vocab);
                 let creatable = !locked;
 

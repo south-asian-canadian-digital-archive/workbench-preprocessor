@@ -207,3 +207,26 @@ fn ocr_column_takes_always_or_never() {
     assert!(errors(&report).iter().any(|e| e.contains("\"sometimes\" isn't one of OCR")), "{:?}", errors(&report));
     assert_eq!(fixed.get(&fixed.rows[2], "field_ocr"), "always");
 }
+
+#[test]
+fn new_terms_go_where_their_field_can_point_on_every_site() {
+    let Some(g) = g() else { return };
+    let cfg = Config::load_from(&g).unwrap();
+    for (site_name, site) in &cfg.sacda.sites {
+        for field in cfg.sacda.fields.keys() {
+            let Some(vocab) = cfg.new_term_vocab(field, site) else { continue };
+            for bundle in ["islandora_object", "archival_component"] {
+                if let Some(def) = cfg.schema.fields(bundle).get(field) {
+                    if def.targets.is_empty() {
+                        continue;
+                    }
+                    assert!(
+                        def.targets.contains(&vocab),
+                        "on {site_name}, a new {field} term would go to {vocab}, but {bundle}.{field} takes {:?}",
+                        def.targets
+                    );
+                }
+            }
+        }
+    }
+}

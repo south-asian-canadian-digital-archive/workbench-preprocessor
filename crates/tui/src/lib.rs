@@ -320,7 +320,12 @@ pub fn count_files(dir: &Path) -> Option<usize> {
     }
     let mut n = 0;
     let mut stack = vec![dir.to_path_buf()];
+    let mut seen = std::collections::HashSet::new();
     while let Some(d) = stack.pop() {
+        // A link back up the tree would otherwise be walked forever.
+        if !seen.insert(dunce::canonicalize(&d).unwrap_or(d.clone())) {
+            continue;
+        }
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
             let p = e.path();
@@ -535,10 +540,12 @@ impl App {
         self.folder_counts.borrow().values().any(Option::is_none)
     }
 
-    /// The rows chosen for a sheet (`s`), if not the whole sheet.
-    pub fn subset_for(&self, input: &str) -> Option<sacda::subset::Subset> {
+    /// The rows chosen for a sheet (`s`), if not the whole sheet. A saved
+    /// choice that doesn't parse is an error, never "the whole sheet".
+    pub fn subset_for(&self, input: &str) -> Result<Option<sacda::subset::Subset>, String> {
         let raw = self.sheets.get(input).map(|s| s.subset.clone()).unwrap_or_default();
-        sacda::subset::Subset::parse(&raw).ok().flatten()
+        sacda::subset::Subset::parse(&raw)
+            .map_err(|e| format!("the rows chosen for this sheet (\"{raw}\") aren't valid: {e:#} - press s to change them"))
     }
 
     fn options(&self, input: &str) -> Options {
@@ -583,7 +590,13 @@ impl App {
         let cfg = self.cfg.clone();
         let sheet = self.start.sheet.clone();
         let opts = self.options(&input);
-        let subset = self.subset_for(&input);
+        let subset = match self.subset_for(&input) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
         let accept = self.start.accept_suggestions;
         let progress = Arc::new(Progress::default());
         let p = progress.clone();
@@ -637,7 +650,13 @@ impl App {
         let cfg = self.cfg.clone();
         let sheet = self.start.sheet.clone();
         let opts = self.options(&input);
-        let subset = self.subset_for(&input);
+        let subset = match self.subset_for(&input) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
         let old = self.session.take();
         let progress = Arc::new(Progress::default());
         let p = progress.clone();
@@ -690,7 +709,13 @@ impl App {
     /// no download, no vocabulary fetch. Decisions follow their rows.
     fn use_subset(&mut self) {
         let subset = match &self.screen {
-            Screen::Review(r) => self.subset_for(&r.input_name),
+            Screen::Review(r) => match self.subset_for(&r.input_name) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.status = e;
+                    return;
+                }
+            },
             _ => return,
         };
         let Screen::Review(r) = &mut self.screen else { return };
@@ -882,16 +907,23 @@ pub fn run(start: Start) -> Result<Option<Outcome>> {
     let first = start.input.clone();
     let mut app = App::new(start);
     if let (Some(only), Some(input)) = (only, first) {
+        // Same check as plain mode: a typo stops here instead of meaning "all rows".
+        sacda::subset::Subset::parse(&only).map_err(|e| anyhow::anyhow!("--only {only}: {e:#}"))?;
         app.sheets.entry(&input).subset = only;
         app.sheets.save();
     }
     let mut term = setup()?;
     // Restore the terminal even if something below panics.
     let hook = std::panic::take_hook();
+    // Only for the screen's own thread: a panic on the check thread is caught
+    // there (the screen says the check stopped) and the screen carries on.
+    let ui = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
-        hook(info);
+        if std::thread::current().id() == ui {
+            let _ = disable_raw_mode();
+            let _ = execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
+            hook(info);
+        }
     }));
     let result = event_loop(&mut app, &mut term);
     teardown(&mut term);
@@ -1117,7 +1149,7 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                             } else {
                                 let p = clean_path(&raw);
                                 if p.is_dir() {
-                                    let p = std::fs::canonicalize(&p).unwrap_or(p);
+                                    let p = dunce::canonicalize(&p).unwrap_or(p);
                                     app.status = format!("Files folder for this sheet: {}", p.display());
                                     app.sheets.entry(&sel).folder = Some(p);
                                     app.sheets.save();

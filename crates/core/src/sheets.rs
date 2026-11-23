@@ -146,7 +146,18 @@ pub fn pull(url: &str, cfg: &Config) -> Result<Pulled> {
     let text = organise_legacy::CsvModifier::fetch_google_sheets_csv(url)?;
     let dir = crate::authority::cache_dir().unwrap_or_else(std::env::temp_dir).join("sheets");
     fs::create_dir_all(&dir).with_context(|| format!("can't create {}", dir.display()))?;
-    let path = dir.join(format!("{id}.csv"));
+    if !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        anyhow::bail!("that isn't a Google Sheets link (docs.google.com/spreadsheets/d/...)");
+    }
+    // One file per tab, so two tabs of a sheet don't overwrite each other.
+    let gid = url
+        .split(['#', '?', '&'])
+        .find_map(|kv| kv.strip_prefix("gid="))
+        .filter(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit()));
+    let path = dir.join(match gid {
+        Some(g) if g != "0" => format!("{id}-{g}.csv"),
+        _ => format!("{id}.csv"),
+    });
     fs::write(&path, &text).with_context(|| format!("can't write {}", path.display()))?;
     let table = source::load_for(&path.to_string_lossy(), None, cfg)?;
     Ok(Pulled { url: url.trim().to_string(), label: label_of(&table, cfg), rows: table.rows.len(), span: span_of(&table), path })

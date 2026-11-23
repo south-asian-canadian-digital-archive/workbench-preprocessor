@@ -219,6 +219,9 @@ pub struct Session {
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
     prefetched: std::collections::HashSet<String>,
+    /// Collections whose "what's already on the site" lookup failed in this
+    /// check, with the error. Not cached: the next check asks again.
+    node_errors: std::collections::BTreeMap<String, String>,
     /// Findings that must survive the settle passes even after a fix rewrites
     /// the cell that raised them (ID/heading mismatches).
     pub(crate) sticky: Vec<Finding>,
@@ -264,6 +267,7 @@ impl Session {
             lang: None,
             nodes: HashMap::new(),
             prefetched: Default::default(),
+            node_errors: Default::default(),
             progress: false,
             job: Default::default(),
             term_memo: HashMap::new(),
@@ -314,6 +318,10 @@ impl Session {
     /// The node already on the site with this identifier. The first lookup under
     /// a collection fetches every node under that collection in one go; after
     /// that, anything not in the cache isn't on the site.
+    ///
+    /// A lookup that fails is never read as "not there" for good: it's recorded
+    /// in `node_errors` (an error finding that blocks the ingest, so nothing is
+    /// created twice) and asked again on the next check.
     pub fn find_node(&mut self, identifier: &str) -> Option<NodeRef> {
         if let Some(hit) = self.nodes.get(identifier) {
             return hit.clone();
@@ -323,6 +331,10 @@ impl Session {
             .take(super::tree::COLLECTION_SEGMENTS)
             .collect::<Vec<_>>()
             .join("_");
+        if self.node_errors.contains_key(&root) {
+            // Already failed in this check: don't sit through the retries again.
+            return None;
+        }
         if self.prefetched.insert(root.clone()) {
             if let Some(site) = &self.site {
                 if self.progress {
@@ -333,7 +345,7 @@ impl Session {
                 if self.progress {
                     match &got {
                         Ok(v) => eprintln!("{} node(s)", v.len()),
-                        Err(e) => eprintln!("failed ({e}) - checking one by one"),
+                        Err(e) => eprintln!("failed ({e})"),
                     }
                 }
                 match got {
@@ -342,12 +354,10 @@ impl Session {
                             self.nodes.insert(id, Some(n));
                         }
                     }
-                    Err(_) => {
-                        // Fall back to one lookup per identifier.
+                    Err(e) => {
                         self.prefetched.remove(&root);
-                        let got = site.find_node(identifier).ok().flatten();
-                        self.nodes.insert(identifier.to_string(), got.clone());
-                        return got;
+                        self.node_errors.insert(root, format!("{e:#}"));
+                        return None;
                     }
                 }
             }
@@ -355,7 +365,14 @@ impl Session {
         if self.prefetched.contains(&root) || self.site.is_none() {
             return self.nodes.entry(identifier.to_string()).or_insert(None).clone();
         }
-        let got = self.site.as_ref().and_then(|s| s.find_node(identifier).ok().flatten());
+        let got = match self.site.as_ref().map(|s| s.find_node(identifier)) {
+            Some(Ok(got)) => got,
+            Some(Err(e)) => {
+                self.node_errors.insert(root, format!("{e:#}"));
+                return None;
+            }
+            None => None,
+        };
         self.nodes.insert(identifier.to_string(), got.clone());
         got
     }
@@ -383,7 +400,18 @@ impl Session {
                 n.title = t.clone();
             }
         }
+        self.node_errors.clear();
         checks::structure(self, table, &mut report);
+        for (root, e) in &self.node_errors {
+            report.findings.push(Finding::new(
+                Severity::Error,
+                "structure",
+                format!(
+                    "couldn't look up what's already on the site under {root} ({e}) - without it, collections and items \
+                     already there could be created twice. Re-check (r) once the site answers"
+                ),
+            ));
+        }
         checks::files(self, table, &mut report);
         checks::dates(self, table, &mut report);
         checks::lists(self, table, &mut report);

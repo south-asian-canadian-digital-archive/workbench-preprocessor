@@ -157,7 +157,7 @@ pub struct Cli {
     pub ingest: bool,
 
     /// Confirm a site marked `confirm = true` (prod) without the typed prompt
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub yes: bool,
 
     /// Ignore the sheet's file column: every access file is <identifier>.<ext>

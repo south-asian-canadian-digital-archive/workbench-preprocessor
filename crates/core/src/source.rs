@@ -63,8 +63,21 @@ pub fn load(input: &str, sheet: Option<&str>, aliases: &HashMap<String, String>)
     parse(input, &bytes, aliases)
 }
 
+/// The sheet's text. UTF-8 when it is; UTF-16 with a byte-order mark (Excel's
+/// "Unicode Text"); otherwise Windows-1252, which is what Excel's plain "CSV"
+/// writes - decoding that as UTF-8 would turn every accented letter into "?".
+fn decode(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    if let Some((enc, _)) = encoding_rs::Encoding::for_bom(bytes) {
+        return enc.decode_with_bom_removal(bytes).0;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.into(),
+        Err(_) => encoding_rs::WINDOWS_1252.decode_without_bom_handling(bytes).0,
+    }
+}
+
 pub fn parse(source: &str, bytes: &[u8], aliases: &HashMap<String, String>) -> Result<Table> {
-    let text = String::from_utf8_lossy(bytes);
+    let text = decode(bytes);
     let text = text.trim_start_matches('\u{feff}');
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
