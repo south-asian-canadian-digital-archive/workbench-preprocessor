@@ -1354,7 +1354,7 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
 name = "sacda-core"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "calamine",
@@ -1373,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "sacda-tui"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -2276,7 +2276,7 @@ checksum = "052283831dbae3d879dc7f51f3d92703a316ca49f91540417d38591826127814"
 
 [[package]]
 name = "workbench-preprocessor"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "clap",
