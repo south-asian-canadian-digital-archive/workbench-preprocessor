@@ -50,6 +50,11 @@ pub fn enter(job: Arc<Progress>) -> impl Drop {
     Guard(CURRENT.with(|c| c.borrow_mut().replace(job)))
 }
 
+/// Is this thread working for a job (a screen that can stop it)?
+pub fn has_job() -> bool {
+    CURRENT.with(|c| c.borrow().is_some())
+}
+
 /// Has the job this thread works for been cancelled?
 pub fn cancelled_here() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(|p| p.cancelled()))

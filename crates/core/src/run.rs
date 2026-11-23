@@ -66,6 +66,14 @@ fn spawn_workbench(cfg: &Config, config: &Path, check: bool, line: &mut dyn FnMu
     if check {
         cmd.arg("--check");
     }
+    // Under a screen that can stop it, Workbench gets a process group of its
+    // own, so stopping reaches Python under `uv` too. Not in plain mode:
+    // there Ctrl-C must still reach it with the terminal's own group.
+    #[cfg(unix)]
+    if crate::progress::has_job() {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd
         .current_dir(&root)
         // Piped, Python holds output back in big blocks: no live progress.
@@ -120,15 +128,41 @@ fn spawn_workbench(cfg: &Config, config: &Path, check: bool, line: &mut dyn FnMu
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if crate::progress::cancelled_here() {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("stopped - Workbench was stopped partway through; what it had already created stays on the site (rollback files are in g/rollback/)");
+            kill_tree(&mut child);
+            bail!("Workbench was stopped partway through; what it had already created stays on the site (rollback files are in g/rollback/)");
         }
     }
     for p in pumps {
         let _ = p.join();
     }
     Ok(child.wait()?.success())
+}
+
+/// Stop `uv` and everything it started (Python running Workbench): killing
+/// only `uv` would leave Workbench running on, still creating nodes.
+fn kill_tree(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    #[cfg(unix)]
+    {
+        // The group's id is uv's pid (process_group(0) above). A polite stop
+        // first, so Python can finish writing its log line; then for good.
+        let group = format!("-{pid}");
+        let _ = Command::new("kill").args(["-TERM", "--", &group]).stderr(Stdio::null()).status();
+        for _ in 0..30 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = Command::new("kill").args(["-KILL", "--", &group]).stderr(Stdio::null()).status();
+    }
+    #[cfg(windows)]
+    {
+        // /T: the whole tree under uv.
+        let _ = Command::new("taskkill").args(["/PID", &pid, "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn is_error_line(line: &str) -> bool {
@@ -296,5 +330,33 @@ fn check_step(cfg: &Config, dir: &Path, config: &str, name: &str, ev: &mut dyn F
             ev(Event::Line(l));
         }
         bail!("Workbench's check failed for {name}; nothing from it or after it was ingested")
+    }
+}
+
+#[cfg(all(test, unix))]
+mod kill_tests {
+    use super::*;
+
+    /// A grandchild (like Python under uv) is stopped along with the child.
+    #[test]
+    fn stopping_reaches_the_grandchild() {
+        use std::os::unix::process::CommandExt;
+        let d = tempfile::tempdir().unwrap();
+        let pidfile = d.path().join("pid");
+        let script = format!("sleep 60 & echo $! > {}; wait", pidfile.display());
+        let mut child = Command::new("sh").arg("-c").arg(script).process_group(0).spawn().unwrap();
+        let mut grandchild = String::new();
+        for _ in 0..50 {
+            grandchild = std::fs::read_to_string(&pidfile).unwrap_or_default().trim().to_string();
+            if !grandchild.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!grandchild.is_empty());
+        kill_tree(&mut child);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let alive = Command::new("kill").args(["-0", &grandchild]).stderr(Stdio::null()).status().unwrap().success();
+        assert!(!alive, "the grandchild {grandchild} is still running");
     }
 }
