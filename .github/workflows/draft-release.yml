@@ -28,19 +28,23 @@ jobs:
       sha: ${{ steps.tag.outputs.sha }}
     steps:
       - name: Checkout (tags + history)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Resolve tag, bumping Cargo.toml if it is stale
         id: tag
+        # Passed through the environment, never pasted into the script.
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           read_ver() { grep -m1 '^version =' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/'; }
           tag_exists() { git rev-parse -q --verify "refs/tags/$1" >/dev/null; }
 
-          TAG="$(echo -n "${{ inputs.tag }}" | tr -d '[:space:]')"
+          TAG="$(printf '%s' "$TAG_INPUT" | tr -d '[:space:]')"
+          case "$TAG" in ""|v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "Tag must look like v1.2.3" >&2; exit 1;; esac
           if [ -n "$TAG" ]; then
             tag_exists "$TAG" && { echo "Tag ${TAG} already exists." >&2; exit 1; }
             VER="${TAG#v}"
@@ -70,9 +74,28 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "Releasing ${TAG} from $(git rev-parse --short HEAD)"
 
+  test:
+    name: Clippy + tests
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.resolve-version.outputs.sha }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
   build:
     name: Build ${{ matrix.platform.name }}
-    needs: resolve-version
+    needs: [resolve-version, test]
     runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
@@ -101,29 +124,30 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.resolve-version.outputs.sha }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.platform.target }}
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache cargo git
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cargo/git
           key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Cache target
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: target
           key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
@@ -186,7 +210,7 @@ jobs:
           Compress-Archive -Path "release-artifacts/*" -DestinationPath "workbench-preprocessor-${{ matrix.platform.name }}.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: workbench-preprocessor-${{ matrix.platform.name }}
           path: workbench-preprocessor-${{ matrix.platform.name }}.${{ matrix.platform.package }}
@@ -201,12 +225,12 @@ jobs:
 
     steps:
       - name: Checkout (installer scripts)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           sparse-checkout: install
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           path: artifacts
           pattern: workbench-preprocessor-*
@@ -233,7 +257,7 @@ jobs:
           chmod +x install.sh
 
       - name: Create draft release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           draft: true
           prerelease: false

@@ -38,8 +38,13 @@ try {
     try { Invoke-WebRequest "$base/$asset" -OutFile $zip -UseBasicParsing }
     catch { Die "couldn't download $asset from $base - check the internet connection" }
 
-    try {
-        $sums = (Invoke-WebRequest "$base/SHASUMS256.txt" -UseBasicParsing).Content
+    # No checksum, no install: $env:ORGANISE_SKIP_CHECKSUM = "1" is the deliberate way past it.
+    # (Any download error counts: PowerShell 7 throws HttpResponseException, not WebException.)
+    $sums = $null
+    try { $sums = (Invoke-WebRequest "$base/SHASUMS256.txt" -UseBasicParsing).Content }
+    catch { $sums = $null }
+    if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
+    if ($sums) {
         $line = ($sums -split "`n") | Where-Object { $_ -match [regex]::Escape($asset) + '\s*$' } | Select-Object -First 1
         if (-not $line) { Die "SHASUMS256.txt doesn't list $asset" }
         $want = ($line -split '\s+')[0].ToLower()
@@ -47,7 +52,8 @@ try {
         if ($want -ne $got) { Die "checksum mismatch for $asset - download corrupted? re-run" }
         Say "checksum ok"
     }
-    catch [System.Net.WebException] { Say "no SHASUMS256.txt on this release - skipping the checksum" }
+    elseif ($env:ORGANISE_SKIP_CHECKSUM -eq "1") { Say "couldn't get SHASUMS256.txt - installing without a checksum (ORGANISE_SKIP_CHECKSUM=1)" }
+    else { Die "couldn't download SHASUMS256.txt to check $asset - re-run, or set ORGANISE_SKIP_CHECKSUM=1 to install anyway" }
 
     $x = Join-Path $tmp "x"
     Expand-Archive -Path $zip -DestinationPath $x -Force

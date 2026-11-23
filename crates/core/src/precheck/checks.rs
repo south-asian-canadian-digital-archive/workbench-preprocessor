@@ -443,7 +443,7 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
             .flat_map(|n| n.files.iter().filter_map(|f| f.path.as_deref()))
             .collect();
         let unmatched: Vec<std::path::PathBuf> =
-            s.files.all().into_iter().filter(|p| !used.contains(p.as_path()) && !looks_like_derivative(&p.to_string_lossy())).collect();
+            s.files.all().into_iter().filter(|p| !used.contains(p.as_path()) && !p.file_name().is_some_and(|n| looks_like_derivative(&n.to_string_lossy()))).collect();
         if !unmatched.is_empty() {
             // They can be items of their own when each is named after an
             // identifier whose parent the sheet or the site already has.

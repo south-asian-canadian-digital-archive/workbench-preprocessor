@@ -13,10 +13,12 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Running clippy..."
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+if ($LASTEXITCODE -ne 0) { throw "clippy failed" }
 
 Write-Host "Running tests..."
-cargo test
+cargo test --workspace
+if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 
 Write-Host "Building release..."
 cargo build --release

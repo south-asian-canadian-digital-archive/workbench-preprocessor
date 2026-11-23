@@ -8,7 +8,6 @@ use reqwest::blocking::{Client, Response};
 use reqwest::StatusCode;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::thread::sleep;
 use std::time::Duration;
 
 pub const JSONAPI_HELP: &str = "JSON:API is off on this site. Turn it on under Extend \
@@ -71,6 +70,9 @@ impl Site {
     fn get(&self, url: &str) -> Result<Response> {
         let mut delay = Duration::from_millis(500);
         for attempt in 0..8 {
+            if crate::progress::cancelled_here() {
+                bail!("cancelled");
+            }
             let mut req = self.client.get(url);
             if let Some((u, p)) = &self.auth {
                 req = req.basic_auth(u, Some(p));
@@ -85,7 +87,9 @@ impl Site {
                 Err(e) if attempt == 7 => return Err(e).with_context(|| format!("GET {url}")),
                 Err(_) => {}
             }
-            sleep(delay);
+            if !crate::progress::sleep(delay) {
+                bail!("cancelled");
+            }
             delay = (delay * 2).min(Duration::from_secs(8));
         }
         unreachable!()

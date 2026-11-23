@@ -54,14 +54,17 @@ printf '\nInstalling organise (%s, %s/%s)\n' "$VERSION" "$plat" "$arch"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "$base/$asset" -o "$tmp/$asset" || die "couldn't download $asset ($base) - check the internet connection"
+# No checksum, no install: ORGANISE_SKIP_CHECKSUM=1 is the deliberate way past it.
 if curl -fsSL "$base/SHASUMS256.txt" -o "$tmp/SHASUMS256.txt"; then
   want=$(grep " $asset\$" "$tmp/SHASUMS256.txt" | awk '{print $1}')
   got=$($SHA "$tmp/$asset" | awk '{print $1}')
   [ -n "$want" ] || die "SHASUMS256.txt doesn't list $asset"
   [ "$want" = "$got" ] || die "checksum mismatch for $asset - download corrupted? re-run"
   say "checksum ok"
+elif [ "${ORGANISE_SKIP_CHECKSUM:-}" = "1" ]; then
+  say "couldn't get SHASUMS256.txt - installing without a checksum (ORGANISE_SKIP_CHECKSUM=1)"
 else
-  say "no SHASUMS256.txt on this release - skipping the checksum"
+  die "couldn't download SHASUMS256.txt to check $asset - re-run, or set ORGANISE_SKIP_CHECKSUM=1 to install anyway"
 fi
 
 mkdir -p "$tmp/x" "$BIN_DIR"

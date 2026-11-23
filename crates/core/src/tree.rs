@@ -344,6 +344,14 @@ pub fn build_with(table: &Table, cfg: &Config, files: &FileIndex, by_identifier:
             })
         });
 
+        if let Some(n) = tree.nodes.get(&id) {
+            // `X_00` already described X as a container: a plain `X` row
+            // would replace it and the container's row would be lost.
+            if n.kind != Kind::Item && n.row.is_some() {
+                tree.rejected.push((i, format!("{id} is already described as a container (by its _00 row) - this row would replace it")));
+                continue;
+            }
+        }
         if let Some(item) = tree.nodes.get_mut(&id) {
             if item.kind == Kind::Item {
                 if let Some(f) = file {
@@ -399,17 +407,16 @@ pub fn build_with(table: &Table, cfg: &Config, files: &FileIndex, by_identifier:
     }
 
     // Untitled components take the legacy `fileTitle` of their first item.
-    let file_titles: HashMap<String, String> = tree
-        .nodes
-        .values()
-        .filter(|n| n.kind == Kind::Item)
-        .filter_map(|n| {
-            let row = &table.rows[n.row?];
-            let ft = table.get(row, "fileTitle");
-            let parent = n.parent.clone()?;
-            (!ft.is_empty()).then(|| (parent, ft.to_string()))
-        })
-        .collect();
+    let mut file_titles: HashMap<String, String> = HashMap::new();
+    for (parent, ft) in tree.nodes.values().filter(|n| n.kind == Kind::Item).filter_map(|n| {
+        let row = &table.rows[n.row?];
+        let ft = table.get(row, "fileTitle");
+        let parent = n.parent.clone()?;
+        (!ft.is_empty()).then(|| (parent, ft.to_string()))
+    }) {
+        // Items come in identifier order: the first one's title is kept.
+        file_titles.entry(parent).or_insert(ft);
+    }
 
     // Levels and models.
     let has_item_child: HashMap<String, bool> = tree

@@ -356,7 +356,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 }
 
                 if let Some((near_vocab, near_name)) = near.as_ref().filter(|_| link.is_none()) {
-                    let fixed_cell = replace_value(&cell, raw, &render_name(raw, &p, near_name), &subdelim);
+                    let fixed_cell = replace_value(&cell, raw, &render_name(&p, near_name), &subdelim);
                     let why = suggest::why(&p.name, near_name);
                     let tid = s
                         .vocabulary(near_vocab)
@@ -474,7 +474,7 @@ fn same_uri(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
-fn render_name(_raw: &str, p: &Parsed, name: &str) -> String {
+fn render_name(p: &Parsed, name: &str) -> String {
     format!("{}{}", p.prefix, name)
 }
 

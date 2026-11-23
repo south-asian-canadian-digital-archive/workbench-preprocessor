@@ -72,33 +72,55 @@ fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(
         .env("PYTHONIOENCODING", "utf-8")
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        // Piped too: Python's tracebacks and warnings would otherwise print
+        // under the progress bar and be missing from the error count.
+        .stderr(Stdio::piped())
         .spawn()
         .context("couldn't start `uv` - is it installed? (run `organise doctor`)")?;
-    let mut errors = Vec::new();
+    // Both pipes are read to the end on their own threads, whatever the
+    // bytes are: one left unread fills up, Workbench blocks writing to it, and
+    // `wait` below never returns. Lines come back here in the order they land.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let pump = |pipe: Box<dyn std::io::Read + Send>, tx: std::sync::mpsc::Sender<String>| {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(pipe);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+                let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        })
+    };
+    let mut pumps = Vec::new();
     if let Some(out) = child.stdout.take() {
-        // Read to the end whatever the bytes are: stopping early would leave
-        // Workbench blocked on a full pipe and `wait` below would never return.
-        let mut reader = BufReader::new(out);
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
-            }
-            let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
-            ev(Event::Line(&line));
-            if is_record(&line) {
-                ev(Event::Record);
-            }
-            let t = line.trim_start().trim_start_matches("- ");
-            if t.starts_with("ERROR") || t.starts_with("Error:") || t.contains("Traceback") {
-                errors.push(line);
-            }
+        pumps.push(pump(Box::new(out), tx.clone()));
+    }
+    if let Some(err) = child.stderr.take() {
+        pumps.push(pump(Box::new(err), tx.clone()));
+    }
+    drop(tx);
+    let mut errors = Vec::new();
+    for line in rx {
+        ev(Event::Line(&line));
+        if is_record(&line) {
+            ev(Event::Record);
         }
+        let t = line.trim_start().trim_start_matches("- ");
+        if t.starts_with("ERROR") || t.starts_with("Error:") || t.contains("Traceback") {
+            errors.push(line);
+        }
+    }
+    for p in pumps {
+        let _ = p.join();
     }
     let status = child.wait()?;
     Ok((status.success(), errors))

@@ -104,6 +104,15 @@ pub fn main(cli: Cli) -> Result<()> {
     let (fixed, report, applied) = session.settle(&table, &accepted, &[]);
 
     println!("\n{}", bundle::report_text(&report, &applied, &table));
+    if cli.accept_suggestions {
+        let guesses: Vec<&str> = first.findings.iter().filter(|f| !f.auto && f.fix.is_some()).map(|f| f.message.as_str()).collect();
+        if !guesses.is_empty() {
+            println!("\nAccepted guesses (--accept-suggestions) - check these were right:");
+            for g in guesses {
+                println!("  {g}");
+            }
+        }
+    }
     print_tree(&report);
 
     if report.blocked() {

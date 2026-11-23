@@ -47,7 +47,21 @@ impl Manifest {
     pub fn read(dir: &Path) -> Result<Self> {
         let p = dir.join("bundle.toml");
         let text = fs::read_to_string(&p).with_context(|| format!("{} isn't an ingest bundle", dir.display()))?;
-        Ok(toml::from_str(&text)?)
+        let m: Self = toml::from_str(&text)?;
+        // Steps run the configs they name, and a Workbench config can name
+        // scripts to run: only files inside this bundle folder.
+        for step in &m.steps {
+            for name in std::iter::once(&step.config).chain(step.covers.iter()) {
+                let plain = !name.is_empty()
+                    && !name.contains(['/', '\\', ':'])
+                    && name != ".."
+                    && Path::new(name).components().count() == 1;
+                if !plain {
+                    anyhow::bail!("{} names \"{name}\" - a bundle's steps must be files in the bundle folder", p.display());
+                }
+            }
+        }
+        Ok(m)
     }
 }
 
@@ -171,6 +185,22 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
     let (_, site_cfg) = cfg.site(Some(site))?;
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let dir = dunce::canonicalize(dir)?;
+    // The default folder is reused for the same collection and site: clear
+    // what an earlier bundle wrote, so nothing stale sits beside the new one.
+    // Only organise's own files; logs, rollback and anything else stay.
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let ours = name == "bundle.toml"
+                || name == "precheck-report.txt"
+                || name == "items.config.yml"
+                || name == "components.config.yml"
+                || (name.starts_with("terms-") && (name.ends_with(".csv") || name.ends_with(".config.yml")));
+            if ours && e.file_type().is_ok_and(|t| t.is_file()) {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
     let ctx = Ctx {
         cfg,
         table,

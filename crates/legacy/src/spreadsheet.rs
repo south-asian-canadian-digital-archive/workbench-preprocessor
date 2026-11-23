@@ -78,7 +78,10 @@ fn workbook_to_csv(path: &Path, sheet_name: Option<&str>) -> Result<Vec<u8>> {
     let range = workbook
         .worksheet_range(&selected)
         .with_context(|| format!("Failed to read worksheet '{selected}'"))?;
-    let mut writer = WriterBuilder::new().from_writer(Vec::new());
+    // The range starts at the first cell with something in it: blank rows
+    // above it still count, so row numbers match what Excel shows.
+    let blank_above = range.start().map(|(r, _)| r as usize).unwrap_or(0);
+    let mut writer = WriterBuilder::new().from_writer(b"\n".repeat(blank_above));
     for row in range.rows() {
         writer.write_record(row.iter().map(cell_text))?;
     }

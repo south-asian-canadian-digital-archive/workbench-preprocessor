@@ -79,7 +79,7 @@ impl Sheets {
             let _ = fs::create_dir_all(d);
         }
         if let Ok(t) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(p, t);
+            let _ = crate::write_atomic(p, t.as_bytes());
         }
     }
 

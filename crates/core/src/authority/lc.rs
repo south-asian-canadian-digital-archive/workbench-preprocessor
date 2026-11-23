@@ -106,6 +106,9 @@ impl Lc {
     fn head(&self, url: &str) -> Result<reqwest::blocking::Response> {
         let mut wait = Duration::from_secs(2);
         for attempt in 1..=6 {
+            if crate::progress::cancelled_here() {
+                anyhow::bail!("cancelled");
+            }
             self.pace();
             let resp = self.client.head(url).send().with_context(|| format!("HEAD {url}"))?;
             let code = resp.status().as_u16();
@@ -115,7 +118,9 @@ impl Lc {
             if attempt == 6 {
                 anyhow::bail!("id.loc.gov answered {code} for {url} (throttled?) - try again in a few minutes");
             }
-            sleep(wait);
+            if !crate::progress::sleep(wait) {
+                anyhow::bail!("cancelled");
+            }
             wait = (wait * 2).min(Duration::from_secs(30));
         }
         unreachable!()

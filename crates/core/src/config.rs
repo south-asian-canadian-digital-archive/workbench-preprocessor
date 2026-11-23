@@ -387,13 +387,20 @@ pub fn read_credentials(path: &Path) -> Result<(String, String)> {
         .with_context(|| format!("credentials file {} isn't there", path.display()))?;
     let mut user = None;
     let mut pass = None;
-    for line in text.lines() {
+    // Notepad saves with a byte-order mark, which would hide the first key.
+    for line in text.trim_start_matches('\u{feff}').lines() {
         let line = line.trim();
         if line.starts_with('#') {
             continue;
         }
         if let Some((k, v)) = line.split_once(':') {
-            let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+            let v = v.trim();
+            // One matching pair of quotes is YAML's; quotes inside are the password's.
+            let v = [('"', '"'), ('\'', '\'')]
+                .iter()
+                .find_map(|(a, b)| v.strip_prefix(*a).and_then(|s| s.strip_suffix(*b)).filter(|_| v.len() >= 2))
+                .unwrap_or(v)
+                .to_string();
             match k.trim() {
                 "username" => user = Some(v),
                 "password" => pass = Some(v),

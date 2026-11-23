@@ -63,6 +63,35 @@ pub fn load(input: &str, sheet: Option<&str>, aliases: &HashMap<String, String>)
     parse(input, &bytes, aliases)
 }
 
+/// Blank lines above the header (counted, then dropped) and blank lines
+/// between rows (kept, as a row of empty cells): the CSV reader skips blank
+/// lines, which would shift every row number after one.
+fn keep_blank_lines(text: &str) -> (usize, String) {
+    let mut lead = 0;
+    let mut rest = text;
+    while let Some(r) = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n')) {
+        lead += 1;
+        rest = r;
+    }
+    let mut out = String::with_capacity(rest.len() + 16);
+    let mut quoted = false;
+    let mut line_start = true;
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        if line_start && !quoted && (c == '\n' || (c == '\r' && chars.peek() == Some(&'\n'))) {
+            out.push(',');
+        }
+        line_start = false;
+        match c {
+            '"' => quoted = !quoted,
+            '\n' => line_start = true,
+            _ => {}
+        }
+        out.push(c);
+    }
+    (lead, out)
+}
+
 /// The sheet's text. UTF-8 when it is; UTF-16 with a byte-order mark (Excel's
 /// "Unicode Text"); otherwise Windows-1252, which is what Excel's plain "CSV"
 /// writes - decoding that as UTF-8 would turn every accented letter into "?".
@@ -78,7 +107,8 @@ fn decode(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
 
 pub fn parse(source: &str, bytes: &[u8], aliases: &HashMap<String, String>) -> Result<Table> {
     let text = decode(bytes);
-    let text = text.trim_start_matches('\u{feff}');
+    let (lead, text) = keep_blank_lines(text.trim_start_matches('\u{feff}'));
+    let text = text.as_str();
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
         .from_reader(text.as_bytes());
@@ -106,6 +136,9 @@ pub fn parse(source: &str, bytes: &[u8], aliases: &HashMap<String, String>) -> R
     let mut repaired = 0;
     for (i, rec) in reader.records().enumerate() {
         let rec = rec.with_context(|| format!("row {} can't be read", i + 2))?;
+        // The spreadsheet's own row: blank rows count (see keep_blank_lines),
+        // and a cell with line breaks is still one row.
+        let line = lead + 2 + i;
         let mut cells: Vec<String> = (0..headers.len())
             .map(|c| normalize_cell(rec.get(c).unwrap_or("")).to_string())
             .collect();
@@ -117,7 +150,7 @@ pub fn parse(source: &str, bytes: &[u8], aliases: &HashMap<String, String>) -> R
         if cells.iter().all(String::is_empty) {
             continue;
         }
-        rows.push(Row { line: i + 2, cells });
+        rows.push(Row { line, cells });
     }
 
     Ok(Table {
@@ -220,7 +253,6 @@ pub fn prepare(t: &mut Table, cfg: &Config) {
             || h == sc.collection_title_column
             || fields.iter().any(|(k, _)| k == h)
     };
-    let mut auto = Vec::new();
     for i in 0..t.headers.len() {
         let h = t.headers[i].clone();
         if h.is_empty() || skip(&h) {
@@ -234,14 +266,11 @@ pub fn prepare(t: &mut Table, cfg: &Config) {
             .map(|(k, _)| k.clone());
         if let Some(to) = hit {
             if t.col(&to).is_none() {
-                auto.push(format!("{h} -> {to}"));
                 t.renamed.push((h, to.clone()));
                 t.headers[i] = to;
             }
         }
     }
-    // (reported together with the alias renames)
-    let _ = auto;
 
     let mut pairs: Vec<(&String, &String)> = sc.identifier_columns.iter().collect();
     pairs.sort();
@@ -387,6 +416,21 @@ fn place_from_key(v: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_numbers_are_the_sheets() {
+        // A blank line and a cell with a line break don't shift later rows.
+        let csv = "id,title\n2024_1_1,a\n\n2024_1_2,\"two\nlines\"\n2024_1_3,c\n";
+        let t = parse("t", csv.as_bytes(), &HashMap::new()).unwrap();
+        let lines: Vec<usize> = t.rows.iter().map(|r| r.line).collect();
+        assert_eq!(lines, [2, 4, 5]);
+    }
+
+    #[test]
+    fn windows_csv_keeps_accents() {
+        let t = parse("t", b"id,title\n2024_1_1,Caf\xe9\n", &HashMap::new()).unwrap();
+        assert_eq!(t.rows[0].cells[1], "Café");
+    }
 
     #[test]
     fn place_keys() {

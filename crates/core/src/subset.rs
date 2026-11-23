@@ -17,7 +17,8 @@ pub struct Subset {
 
 impl Subset {
     /// Parse page-style rows - "12", "12,15", "-40", "100-", "12-40" - and/or
-    /// identifiers ("2024_19_1545"), comma-separated. Row numbers are the
+    /// identifiers ("2024_19_1545"), comma-separated. A row is picked when any
+    /// of them picks it. Row numbers are the
     /// sheet's own (row 1 is the header). Empty = the whole sheet (None).
     pub fn parse(spec: &str) -> Result<Option<Self>> {
         let mut s = Subset::default();
@@ -78,9 +79,9 @@ impl Subset {
         let picked: Vec<usize> = (0..table.rows.len())
             .filter(|&i| {
                 let line = table.rows[i].line;
-                let by_id = self.ids.is_empty() || self.ids.iter().any(|r| under(&ids[i], r));
-                let by_row = self.rows.is_empty() || self.rows.iter().any(|(a, b)| (*a..=*b).contains(&line));
-                by_id && by_row
+                // Either picks a row: "2024_19_2, 40-" is that subtree and
+                // everything from row 40, like pages in a print dialog.
+                self.ids.iter().any(|r| under(&ids[i], r)) || self.rows.iter().any(|(a, b)| (*a..=*b).contains(&line))
             })
             .collect();
         let items: HashSet<&str> = picked.iter().map(|&i| ids[i].as_str()).filter(|id| is_item(id)).collect();
@@ -184,6 +185,14 @@ mod tests {
         let mut t = table(SHEET);
         assert_eq!(Subset::parse("-4").unwrap().unwrap().apply(&mut t).unwrap(), 1);
         assert_eq!(kept(&t), ["2024_19", "2024_19_1", "2024_19_1_001"]);
+    }
+
+    #[test]
+    fn ids_and_rows_add_up() {
+        // 2024_19_1's items, plus row 8 (2024_19_2_002).
+        let mut t = table(SHEET);
+        assert_eq!(Subset::parse("2024_19_1, 8").unwrap().unwrap().apply(&mut t).unwrap(), 3);
+        assert_eq!(kept(&t), ["2024_19", "2024_19_1", "2024_19_1_001", "2024_19_1_002", "2024_19_2", "2024_19_2_002"]);
     }
 
     #[test]

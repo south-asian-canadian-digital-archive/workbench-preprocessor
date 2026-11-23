@@ -366,6 +366,11 @@ pub fn clean_path(raw: &str) -> PathBuf {
 /// cmd/ctrl-click, so the screen does it.
 pub fn open_url(url: &str) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
+    // Only web links: the Windows handler would open file: and app links too.
+    let lower = url.trim().to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("not a web link: {url}")));
+    }
     let mut cmd = if cfg!(target_os = "macos") {
         let mut c = Command::new("open");
         c.arg(url);

@@ -90,11 +90,6 @@ impl Cache {
         self.asked
     }
 
-    /// Forget this run's failed lookups, so the next check tries them again.
-    pub fn retry_failed(&mut self) {
-        self.failed.clear();
-    }
-
     pub fn resolve(&mut self, auth: &dyn Authority, value: &str) -> Result<Option<Resolved>> {
         let key = format!("{}\u{1f}{}", auth.name(), value.trim().to_lowercase());
         if let Some(hit) = self.entries.get(&key) {
@@ -110,7 +105,10 @@ impl Cache {
         let got = match auth.resolve(value) {
             Ok(g) => g,
             Err(e) => {
-                self.failed.insert(key, format!("{e:#}"));
+                // A cancelled lookup didn't fail: ask again next time.
+                if !crate::progress::cancelled_here() {
+                    self.failed.insert(key, format!("{e:#}"));
+                }
                 return Err(e);
             }
         };
@@ -128,7 +126,7 @@ impl Cache {
                 let _ = fs::create_dir_all(dir);
             }
             if let Ok(text) = serde_json::to_string(self) {
-                let _ = fs::write(p, text);
+                let _ = crate::write_atomic(p, text.as_bytes());
             }
         }
     }

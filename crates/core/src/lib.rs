@@ -28,3 +28,15 @@ pub mod source;
 pub mod subset;
 pub mod suggest;
 pub mod tree;
+
+/// Write a file whole or not at all: to a temp file beside it, then renamed
+/// over it. A crash, or two organise windows saving at once, can't leave half
+/// a JSON file that the next start reads as empty.
+pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map(|_| ()).map_err(|e| e.error)
+}

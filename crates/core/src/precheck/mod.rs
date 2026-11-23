@@ -239,6 +239,8 @@ pub struct Session {
 impl Session {
     pub fn new(cfg: Config, input: &str, opts: Options) -> anyhow::Result<Self> {
         let (site_name, _) = cfg.site(opts.site.as_deref())?;
+        // Offline (and every test) leaves the user's lookup cache alone.
+        let private_cache = cfg!(test) || opts.offline;
         let site = if opts.offline {
             None
         } else {
@@ -272,7 +274,7 @@ impl Session {
             job: Default::default(),
             term_memo: HashMap::new(),
             sticky: Vec::new(),
-            authorities: if cfg!(test) { Cache::in_memory() } else { Cache::open() },
+            authorities: if private_cache { Cache::in_memory() } else { Cache::open() },
             site_findings: None,
         })
     }
@@ -390,6 +392,12 @@ impl Session {
 
     /// Run every check against `table`.
     pub fn check(&mut self, table: &Table, titles: &HashMap<String, String>) -> Report {
+        let _job = super::progress::enter(self.job.clone());
+        // Fetches that failed (or were cancelled) last time are asked again.
+        self.vocabs.retain(|_, v| v.is_ok());
+        if matches!(self.lang, Some(Err(_))) {
+            self.lang = None;
+        }
         let mut report = Report::default();
         checks::site(self, &mut report);
         checks::columns(self, table, &mut report);
@@ -471,7 +479,26 @@ impl Session {
             if todo.is_empty() {
                 return (current, report, applied);
             }
+            // Each cell fix was worked out from the cell as it was, so two for
+            // the same cell (a near-term fix and a rewrite of another value in
+            // it) are merged value by value - applying one after the other
+            // would undo the first.
+            let subdelim = self.cfg.sacda.ingest.subdelimiter.clone();
+            let mut merged: Vec<Fix> = Vec::new();
             for fix in &todo {
+                if let Fix::SetCell { row, column, value } = fix {
+                    if let Some(Fix::SetCell { value: prev, .. }) = merged
+                        .iter_mut()
+                        .find(|m| matches!(m, Fix::SetCell { row: r, column: c, .. } if r == row && c == column))
+                    {
+                        let base = current.rows.get(*row).map(|r| current.get(r, column).to_string()).unwrap_or_default();
+                        *prev = merge_cell(&base, prev, value, &subdelim);
+                        continue;
+                    }
+                }
+                merged.push(fix.clone());
+            }
+            for fix in &merged {
                 apply(&mut current, &mut titles, fix);
             }
             applied.extend(todo);
@@ -519,6 +546,22 @@ pub fn remap_rows(fixes: &[Fix], from: &Table, to: &Table) -> Vec<Fix> {
             other => Some(other.clone()),
         })
         .collect()
+}
+
+/// Two rewrites of the same cell, both made from `base`: each value takes the
+/// change either one made to it. When the values don't line up (a fix added
+/// or removed one), the later rewrite wins and the next pass redoes the other.
+fn merge_cell(base: &str, a: &str, b: &str, subdelim: &str) -> String {
+    let split = |s: &str| s.split(subdelim).map(|v| v.trim().to_string()).collect::<Vec<_>>();
+    let (base, a, b) = (split(base), split(a), split(b));
+    if base.len() != a.len() || base.len() != b.len() {
+        return b.join(subdelim);
+    }
+    base.iter()
+        .zip(a.iter().zip(b.iter()))
+        .map(|(o, (x, y))| if x != o { x.clone() } else { y.clone() })
+        .collect::<Vec<_>>()
+        .join(subdelim)
 }
 
 pub fn apply(table: &mut Table, titles: &mut HashMap<String, String>, fix: &Fix) {
@@ -582,5 +625,18 @@ mod remap_tests {
         let set = |row| Fix::SetCell { row, column: "x".into(), value: "v".into() };
         let moved = remap_rows(&[set(0), set(1), set(2)], &before, &after);
         assert_eq!(moved, vec![set(1), set(2)]); // a_1's fix dropped, a_2 and a_3 stay theirs
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    #[test]
+    fn two_fixes_to_one_cell_both_stay() {
+        let base = "Masjid|Festivles|Muslims";
+        let a = "Masjids|Festivles|Muslims";
+        let b = "Masjid|Festivals|Muslims";
+        assert_eq!(super::merge_cell(base, a, b, "|"), "Masjids|Festivals|Muslims");
+        // Values that don't line up: the later one wins, the next pass redoes the other.
+        assert_eq!(super::merge_cell("a|b", "a", "a|c", "|"), "a|c");
     }
 }
