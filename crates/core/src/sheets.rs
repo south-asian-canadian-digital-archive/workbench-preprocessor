@@ -137,26 +137,14 @@ pub struct Pulled {
 /// Download a Google Sheet to the cache folder and read enough of it to name
 /// it: the collection identifier and title, and the row count.
 pub fn pull(url: &str, cfg: &Config) -> Result<Pulled> {
-    let id = url
-        .split("/spreadsheets/d/")
-        .nth(1)
-        .and_then(|r| r.split(['/', '?', '#']).next())
-        .filter(|id| !id.is_empty())
-        .context("that isn't a Google Sheets link (docs.google.com/spreadsheets/d/...)")?;
-    let text = organise_legacy::CsvModifier::fetch_google_sheets_csv(url)?;
+    let link = crate::input::SheetLink::parse(url)?;
+    let text = crate::input::fetch_sheet(url)?;
     let dir = crate::authority::cache_dir().unwrap_or_else(std::env::temp_dir).join("sheets");
     fs::create_dir_all(&dir).with_context(|| format!("can't create {}", dir.display()))?;
-    if !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
-        anyhow::bail!("that isn't a Google Sheets link (docs.google.com/spreadsheets/d/...)");
-    }
     // One file per tab, so two tabs of a sheet don't overwrite each other.
-    let gid = url
-        .split(['#', '?', '&'])
-        .find_map(|kv| kv.strip_prefix("gid="))
-        .filter(|g| !g.is_empty() && g.bytes().all(|b| b.is_ascii_digit()));
-    let path = dir.join(match gid {
-        Some(g) if g != "0" => format!("{id}-{g}.csv"),
-        _ => format!("{id}.csv"),
+    let path = dir.join(match link.gid.as_deref() {
+        Some(g) if g != "0" => format!("{}-{g}.csv", link.id),
+        _ => format!("{}.csv", link.id),
     });
     fs::write(&path, &text).with_context(|| format!("can't write {}", path.display()))?;
     let table = source::load_for(&path.to_string_lossy(), None, cfg)?;

@@ -63,7 +63,6 @@ jobs:
           path: |
             target/release/organise
             target/release/organise.exe
-            crates/legacy/src/modifiers/field_model_mappings.toml
           if-no-files-found: ignore
           retention-days: 30
 

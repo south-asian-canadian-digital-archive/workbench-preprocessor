@@ -3,8 +3,7 @@
 //! header names renamed. Every rename is recorded so the report can tell the
 //! archivist to fix the sheet itself.
 
-use organise_legacy::csv_modifier::{normalize_cell, sanitize_text_in_place, CsvModifier};
-use organise_legacy::spreadsheet::csv_bytes_from_path;
+use crate::input::{csv_bytes_from_path, fetch_sheet, normalize_cell, sanitize_text_in_place};
 use anyhow::{bail, Context, Result};
 use super::config::Config;
 use std::collections::HashMap;
@@ -56,7 +55,7 @@ pub fn load(input: &str, sheet: Option<&str>, aliases: &HashMap<String, String>)
         if !input.contains("docs.google.com/spreadsheets") {
             bail!("Only Google Sheets links are supported as URLs: {input}");
         }
-        CsvModifier::fetch_google_sheets_csv(input)?.into_bytes()
+        fetch_sheet(input)?.into_bytes()
     } else {
         csv_bytes_from_path(input, sheet)?
     };

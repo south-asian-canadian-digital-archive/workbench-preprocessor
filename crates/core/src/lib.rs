@@ -1,6 +1,7 @@
 //! The SACDA ingest standard: one spreadsheet in, a checked Workbench bundle out.
 //!
 //! - `config`     g/config/sacda.toml + schema.toml
+//! - `input`      read a table or a Google Sheet in, clean its cells
 //! - `source`     load and clean the sheet
 //! - `tree`       collection -> component -> item tree from identifiers
 //! - `precheck`   every check, findings and fixes
@@ -19,6 +20,7 @@ pub mod bundle;
 pub mod config;
 pub mod doctor;
 pub mod edtf;
+pub mod input;
 pub mod precheck;
 pub mod progress;
 pub mod run;

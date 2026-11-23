@@ -8,7 +8,8 @@ edition.workspace = true
 name = "sacda"
 
 [dependencies]
-organise-legacy.workspace = true
+calamine.workspace = true
+chrono = { version = "0.4", default-features = false }
 anyhow.workspace = true
 csv.workspace = true
 serde.workspace = true

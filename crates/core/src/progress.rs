@@ -30,11 +30,6 @@ impl Progress {
     pub fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
-    /// Ready for the next job.
-    pub fn reset(&self) {
-        self.cancel.store(false, Ordering::Relaxed);
-        self.say("");
-    }
 }
 
 thread_local! {

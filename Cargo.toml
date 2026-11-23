@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/legacy", "crates/core", "crates/tui"]
+members = ["crates/core", "crates/tui"]
 resolver = "2"
 
 [workspace.package]
@@ -17,7 +17,6 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 url = "2.5"
 toml = "0.8"
 tempfile = "3.0"
-log = "0.4"
 encoding_rs = "0.8"
 unicode-normalization = "0.1"
 # Paths without Windows' \\?\ prefix (Workbench and the YAML configs get these).
@@ -32,14 +31,12 @@ clap = { version = "4.5", default-features = false, features = [
 ratatui = "0.29"
 crossterm = "0.28"
 indicatif = "0.17"
-organise-legacy = { path = "crates/legacy" }
 sacda-core = { path = "crates/core" }
 sacda-tui = { path = "crates/tui" }
 
 # The `organise` binary: CLI parsing and the plain (non-TUI) mode. The work is in
 #   crates/core    sacda-core: sheet -> checks -> bundle -> Workbench (no UI)
 #   crates/tui     sacda-tui: the interactive screen, on top of sacda-core
-#   crates/legacy  organise-legacy: the old modifier pipeline (`organise legacy`)
 [package]
 name = "workbench-preprocessor"
 version.workspace = true
@@ -54,17 +51,13 @@ name = "organise"
 path = "src/main.rs"
 
 [dependencies]
-organise-legacy.workspace = true
 sacda-core.workspace = true
 sacda-tui.workspace = true
 anyhow.workspace = true
 clap.workspace = true
-env_logger = "0.11"
 
 [dev-dependencies]
 tempfile.workspace = true
-csv.workspace = true
-url.workspace = true
 
 # Test builds keep only line tables (enough for backtraces): full debug info
 # made target/debug several GB.

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Local release helper: default toolchain / host from the environment (same idea as GitHub Actions).
-# Produces bin/organise and copies field_model_mappings.toml alongside it.
+# Produces bin/organise.
 
 set -euo pipefail
 
@@ -30,7 +30,6 @@ mkdir -p bin
 echo ""
 echo "Copying to bin/..."
 mv -f "${RELEASE_BIN}" "bin/${BIN_NAME}"
-cp -f crates/legacy/src/modifiers/field_model_mappings.toml bin/field_model_mappings.toml
 
 echo ""
 echo "Done."
