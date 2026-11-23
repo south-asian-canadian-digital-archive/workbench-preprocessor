@@ -279,6 +279,7 @@ fn footer(app: &App) -> Line<'static> {
                 k.push(("c", c_label));
                 k.push(("r", "re-read sheet"));
                 k.push(("s", "rows"));
+                k.push(("f", "files folder"));
             }
             if ready {
                 k.push(("w", "write"));

@@ -240,6 +240,8 @@ pub struct App {
     pub just_pulled: Option<String>,
     /// Rows were changed (`s`) while a check ran: re-read once it's done.
     pub reread_after_job: bool,
+    /// The files folder changed during a check: re-read once it's done.
+    pub reload_after_job: bool,
     pub pick_offset: Cell<usize>,
     count_tx: mpsc::Sender<(PathBuf, Option<usize>)>,
     count_rx: mpsc::Receiver<(PathBuf, Option<usize>)>,
@@ -418,6 +420,7 @@ impl App {
             sheets: Sheets::load(),
             just_pulled: None,
             reread_after_job: false,
+            reload_after_job: false,
             pick_offset: Cell::new(0),
             count_tx,
             count_rx,
@@ -520,8 +523,11 @@ impl App {
     /// while it's still being counted (on a worker).
     pub fn folder_count(&self, dir: &Path) -> Option<Option<usize>> {
         let mut c = self.folder_counts.borrow_mut();
-        if let Some(v) = c.get(dir) {
-            return *v;
+        match c.get(dir) {
+            // "Not found" is looked at again: the folder may have been made since.
+            Some(Some(None)) if dir.is_dir() => {}
+            Some(v) => return *v,
+            None => {}
         }
         c.insert(dir.to_path_buf(), None);
         let (tx, d) = (self.count_tx.clone(), dir.to_path_buf());
@@ -959,6 +965,10 @@ fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
             app.reread_after_job = false;
             app.use_subset();
         }
+        if app.reload_after_job && app.job.is_none() {
+            app.reload_after_job = false;
+            app.start_recheck(true);
+        }
         app.poll_counts();
         term.draw(|f| view::draw(f, app))?;
         // Tick while something runs so the spinner, progress and counts move.
@@ -1146,7 +1156,12 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                             }
                         }
                         Input::Folder(raw) => {
-                            let Some(sel) = app.selected_input() else { return Ok(Flow::Continue) };
+                            // On the review screen it's the open sheet, and it's re-read with the new folder.
+                            let reviewing = match &app.screen {
+                                Screen::Review(r) => Some(r.input_name.clone()),
+                                _ => None,
+                            };
+                            let Some(sel) = reviewing.clone().or_else(|| app.selected_input()) else { return Ok(Flow::Continue) };
                             if raw.trim().is_empty() {
                                 app.sheets.entry(&sel).folder = None;
                                 app.sheets.save();
@@ -1161,9 +1176,20 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                                 } else {
                                     app.status = format!("{} isn't a folder", p.display());
                                     app.input = Input::Folder(raw);
+                                    return Ok(Flow::Continue);
                                 }
                             }
-                        }
+                            // Count it again: it may have been made (or filled) since it was last counted.
+                            let after = app.access_for(Some(&sel)).0;
+                            app.folder_counts.borrow_mut().remove(&after);
+                            if reviewing.is_some() {
+                                if app.job.is_some() {
+                                    app.reload_after_job = true;
+                                    app.status = format!("{} - used when this check finishes", app.status);
+                                } else {
+                                    app.start_recheck(true);
+                                }
+                            }                        }
                         Input::Clean => {}
                         Input::Subset(raw) => {
                             // On the review screen it's the open sheet, and it's re-read straight away.
@@ -1333,6 +1359,8 @@ enum Action {
     Say(String),
     /// Change which rows are used, then re-read.
     Subset,
+    /// Change the files folder, then re-read.
+    Folder,
 }
 
 fn review_key(r: &mut Review, key: KeyEvent) -> Action {
@@ -1454,6 +1482,7 @@ fn review_key(r: &mut Review, key: KeyEvent) -> Action {
         KeyCode::Char('c') => Action::Recheck,
         KeyCode::Char('r') => Action::Reload,
         KeyCode::Char('s') => Action::Subset,
+        KeyCode::Char('f') => Action::Folder,
         KeyCode::Char('w') => Action::Write { ingest: false },
         KeyCode::Char('i') => Action::Write { ingest: true },
         _ => Action::None,
@@ -1479,6 +1508,12 @@ fn perform(app: &mut App, term: &mut Term, action: Action) -> Result<Flow> {
             if let Screen::Review(r) = &app.screen {
                 let now = app.sheets.get(&r.input_name).map(|s| s.subset.clone()).unwrap_or_default();
                 app.input = Input::Subset(now);
+            }
+        }
+        Action::Folder => {
+            if let Screen::Review(r) = &app.screen {
+                let now = app.sheets.get(&r.input_name).and_then(|s| s.folder.as_ref()).map(|p| p.display().to_string());
+                app.input = Input::Folder(now.unwrap_or_default());
             }
         }
         Action::Reload => {

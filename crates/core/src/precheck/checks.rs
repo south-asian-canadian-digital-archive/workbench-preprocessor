@@ -363,7 +363,7 @@ pub fn files(s: &mut Session, table: &Table, report: &mut Report) {
             Error,
             "files",
             format!(
-                "the access folder {} doesn't exist - stage the files there (or pass --access-dir)",
+                "the access folder {} doesn't exist - stage the files there, or pick the folder (f on the screen, --access-dir otherwise)",
                 s.files.root.display()
             ),
         ));

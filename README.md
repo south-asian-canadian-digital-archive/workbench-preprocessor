@@ -36,7 +36,8 @@ Re-run it to update. From source: `cargo build --release`.
   spreadsheets in the current folder.
 - **Each sheet has its own files folder and file-name rule**, remembered between runs (`sheets.json` next to
   organise's settings file): select it, `f` to set the folder (type it, or drag the folder into the window; the
-  panel shows how many files it holds - counted in the background), `m` to switch file names between "the `file`
+  panel shows how many files it holds - counted in the background; `f` on the review screen changes it for the
+  open sheet and re-reads it), `m` to switch file names between "the `file`
   column, else `<identifier>.<ext>`" and "always `<identifier>.<ext>`" (SACDA staging; also
   `--files-by-identifier`). Then Enter checks it (a link is downloaded fresh for the check).
 - **Part of a sheet:** `s` on a sheet opens a box for which rows to use, written like PDF pages with the sheet's
