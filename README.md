@@ -56,35 +56,97 @@ More: [Install and update](https://github.com/south-asian-canadian-digital-archi
 
 ## Ingest a spreadsheet, start to finish
 
-Do these steps for each batch. Ingest into **test** first. Ingest into **prod** only when the test result is correct.
+Do these steps for each batch. Ingest into **test** first. Ingest into **prod** only after you examine the result on test.
 
 1. **Prepare the files.** Put the access files in a folder named `access` next to the spreadsheet. You can also use a different folder and select it in step 4.
 2. **Open organise.** Open a terminal and type `organise`. The pick screen opens.
+
+   <img src="docs/screenshots/01-pick.png" alt="01-pick" width="760">
+
 3. **Select the sheet.**
    - For a file, use ↑ ↓ to select it.
    - For a Google Sheet, press `u` and paste the link. The sheet must be shared as "anyone with the link".
 4. **Select the files folder.** Press `f` and type the folder path, or drag the folder into the window. Press Enter. The panel shows how many files the folder holds.
+
+   <img src="docs/screenshots/02-files-folder.png" alt="02-files-folder" width="760">
+
 5. **Select the site.** Use ← → to select `test` or `prod`.
 6. **Start the check.** Press Enter. organise reads the sheet and compares it with the site. This can take some minutes the first time.
-7. **Read the findings.** The review screen lists each problem.
+
+   <img src="docs/screenshots/03-checking.png" alt="03-checking" width="760">
+
+7. **Read the findings.** The review screen lists each problem. Each line with `[?]` needs a decision.
    - **Error:** change the value in the spreadsheet. Save the sheet, then press `r` to read it again.
    - **Suggestion:** press `y` to use the fix, or `n` to keep the value. Press `a` to use all suggestions.
    - **Rows without files, or files without rows:** press `y` to skip them, or `n` to ingest them.
    - Press `c` to check again after your decisions.
-   - Press `Tab` to see the new terms and the collection tree.
-8. **Write and ingest.** When no problems remain, the footer shows `w` and `i`. Press `i` to write the bundle and ingest it. For prod, type the site name in full.
-9. **Wait for the ingest.** The ingest screen shows Workbench's output and a progress bar. Do not close the window. To stop the ingest, press `q`, then `y`.
-10. **Look at the result.** When the ingest ends, a stats panel shows what organise created. Press `o` to open the collection on the site.
+
+   <img src="docs/screenshots/04-review.png" alt="04-review" width="760">
+
+   The detail pane tells you why organise suggests a change:
+
+   <img src="docs/screenshots/05-term-suggestion.png" alt="05-term-suggestion" width="760">
+
+8. **Look at the result.** Press `Tab` to see the tree of the collection and the new terms.
+
+   <img src="docs/screenshots/06-tree.png" alt="06-tree" width="760">
+
+9. **Write and ingest.** When no problems remain, the footer shows `w` and `i`. Press `i` to write the bundle and ingest it. For prod, type the site name in full.
+
+   <img src="docs/screenshots/08-ready.png" alt="08-ready" width="760">
+
+10. **Wait for the ingest.** The ingest screen shows Workbench's output and a progress bar. Do not close the window. To stop the ingest, press `q`, then `y`.
+
+    <img src="docs/screenshots/09-ingest-running.png" alt="09-ingest-running" width="760">
+
+11. **Look at the result.** When the ingest ends, a stats panel shows what organise created. Press `o` to open the collection on the site.
+
+    <img src="docs/screenshots/10-ingest-done.png" alt="10-ingest-done" width="760">
 
 If the ingest fails, an error panel opens. Press `c` to copy a debug report. Send the report to the SACDA admin.
 
+<img src="docs/screenshots/11-ingest-error.png" alt="11-ingest-error" width="760">
+
 ### Keys on the screen
 
-| Screen | Keys |
+**Pick screen**
+
+| Key | Action |
 |---|---|
-| Pick | ↑ ↓ sheet · ← → site · Enter check · `u` add a Google Sheets link · `f` files folder · `m` file names · `s` rows · `c` delete temporary files · `q` quit |
-| Review | `y` use the fix · `n` keep the value · `a` use all · `o` open the link · `c` check again · `r` read the sheet again · `s` rows · `f` files folder · `w` write · `i` write and ingest · `Tab` next view · Esc back |
-| Ingest | ↑ ↓ PgUp PgDn scroll · End follow the output · `q` stop · after the ingest: `v` stats or error · `o` open the collection · `c` copy the error report |
+| ↑ ↓ | Select a sheet. |
+| ← → | Select a site. |
+| Enter | Check the sheet. |
+| `u` | Add a Google Sheets link. |
+| `f` | Set the files folder. |
+| `m` | Change the file name rule. |
+| `s` | Select the rows. |
+| `c` | Delete temporary files. |
+| `q` | Quit. |
+
+**Review screen**
+
+| Key | Action |
+|---|---|
+| `y` / `n` | Use the fix / keep the value. |
+| `a` | Use all suggestions. |
+| `o` | Open the link. |
+| `c` | Check again. |
+| `r` | Read the sheet again. |
+| `s` / `f` | Change the rows / the files folder. |
+| `w` / `i` | Write / write and ingest. |
+| `Tab`, `1` `2` `3` | Change the view. |
+| Esc | Go back. |
+
+**Ingest screen**
+
+| Key | Action |
+|---|---|
+| ↑ ↓ PgUp PgDn | Scroll. |
+| End | Follow the output. |
+| `q` | Stop the ingest. |
+| `v` | Show or hide the stats or the error. |
+| `o` | Open the collection. |
+| `c` | Copy the error report. |
 
 The footer of each screen shows the keys you can use now. You can also use the mouse.
 
