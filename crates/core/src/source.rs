@@ -19,10 +19,11 @@ pub struct Table {
     pub cells_repaired: usize,
     /// What `prepare` did, for the report: (is_warning, line or 0, message).
     pub notes: Vec<(bool, usize, String)>,
-    /// The headings the sheet typed beside the identifiers `prepare` used,
-    /// per (line, column). Lets the checks catch an ID that lands on a
-    /// different real heading.
-    pub headings: HashMap<(usize, String), Vec<String>>,
+    /// Authority IDs from an identifier column (`lcsh_identifier`) for the
+    /// headings written in its target column, per (line, target column). The
+    /// headings are what's ingested; an ID only gives the heading it agrees
+    /// with its authority link.
+    pub identifiers: HashMap<(usize, String), Vec<String>>,
     /// Set when only part of the sheet is used (`subset`): what was picked.
     pub subset: Option<String>,
 }
@@ -159,7 +160,7 @@ pub fn parse(source: &str, bytes: &[u8], aliases: &HashMap<String, String>) -> R
         renamed,
         cells_repaired: repaired,
         notes: Vec::new(),
-        headings: HashMap::new(),
+        identifiers: HashMap::new(),
         subset: None,
     })
 }
@@ -280,38 +281,28 @@ pub fn prepare(t: &mut Table, cfg: &Config) {
             t.notes.push((false, 0, format!("column '{idcol}' read as '{target}'")));
             continue;
         };
-        let (mut used, mut kept) = (0, Vec::new());
+        let (mut linked, mut only_ids) = (0, 0);
         for r in t.rows.iter_mut() {
             let ids = split_values(&r.cells[ic], &sc.value_separators, &sub);
-            let terms = split_values(&r.cells[tc], &sc.value_separators, &sub);
             if ids.is_empty() {
                 continue;
             }
-            if terms.is_empty() || ids.len() == terms.len() {
-                if !terms.is_empty() {
-                    t.headings.insert((r.line, target.clone()), terms.iter().map(|x| x.to_string()).collect());
-                }
+            let terms = split_values(&r.cells[tc], &sc.value_separators, &sub);
+            if terms.is_empty() {
+                // Nothing written: the IDs are the subjects (their headings come from the authority).
                 r.cells[tc] = ids.join(&sub);
-                used += 1;
+                only_ids += 1;
             } else {
-                kept.push(r.line);
+                // The written headings are ingested; the IDs only give them links.
+                t.identifiers.insert((r.line, target.clone()), ids.iter().map(|x| x.to_string()).collect());
+                linked += 1;
             }
         }
-        if used > 0 {
-            t.notes.push((false, 0, format!("{idcol}: identifiers used for {target} on {used} row(s) (headings come from the authority)")));
+        if linked > 0 {
+            t.notes.push((false, 0, format!("{idcol}: used for the authority links of {target}'s headings on {linked} row(s) - the headings themselves are what's ingested")));
         }
-        if !kept.is_empty() {
-            let shown: Vec<String> = kept.iter().take(8).map(|l| l.to_string()).collect();
-            t.notes.push((
-                true,
-                0,
-                format!(
-                    "{idcol} and {target} list a different number of values on {} row(s) ({}{}) - the headings were used",
-                    kept.len(),
-                    shown.join(", "),
-                    if kept.len() > 8 { ", ..." } else { "" }
-                ),
-            ));
+        if only_ids > 0 {
+            t.notes.push((false, 0, format!("{idcol}: {only_ids} row(s) have IDs but no {target} - their headings come from the authority")));
         }
         drop_column(t, ic);
     }

@@ -142,7 +142,7 @@ mod tests {
             renamed: vec![],
             cells_repaired: 0,
             notes: vec![],
-            headings: Default::default(),
+            identifiers: Default::default(),
             subset: None,
         }
     }
