@@ -209,6 +209,10 @@ pub fn run_bundle(cfg: &Config, dir: &Path, check_only: bool) -> Result<()> {
 }
 
 pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn FnMut(Event)) -> Result<()> {
+    // Workbench runs in its own folder, so a relative bundle path
+    // ("organise ingest ingest-x-dev") would point it at the wrong place.
+    let abs = dunce::canonicalize(dir).with_context(|| format!("no bundle folder at {}", dir.display()))?;
+    let dir = abs.as_path();
     let m = Manifest::read(dir)?;
     let say = |ev: &mut dyn FnMut(Event), s: String| ev(Event::Line(&s));
     say(ev, format!("Bundle for {} ({}): {} component(s), {} item(s), {} new term(s)", m.site, m.host, m.components, m.items, m.new_terms));
