@@ -456,12 +456,41 @@ pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn 
         let watch: Vec<_> = marks.iter().map(|(_, log, len)| (log.clone(), *len)).collect();
         // Some filesystems keep modification times to the second or two.
         let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
-        let result = workbench(cfg, &dir.join(&step.config), &watch, ev);
+        // Files added to items already on the site, counted from Workbench's
+        // own lines: it skips a node it can't reach without calling it an error.
+        let mut added = 0usize;
+        let mut deleted = 0usize;
+        let result = workbench(cfg, &dir.join(&step.config), &watch, &mut |e| {
+            if let Event::Line(l) = &e {
+                let t = l.trim_start();
+                if t.starts_with("Media for \"") && t.contains(" created and added to ") {
+                    added += 1;
+                } else if t.starts_with("Media ") && t.contains("/media/") && t.ends_with(" deleted.") {
+                    deleted += 1;
+                }
+            }
+            ev(e)
+        });
         // What it created, also when it failed or was stopped: a rollback needs it most then.
         for c in created_by(step, &configs, &marks, since) {
             ev(Event::Created(&c));
         }
         let (ok, mut errors) = result?;
+        if step.name.starts_with("add-media-") {
+            let wanted = rows_in(dir, step);
+            if added < wanted {
+                let m = format!("ERROR: only {added} of {wanted} file(s) were added to the items already on the site");
+                ev(Event::Line(&m));
+                errors.push(m);
+            }
+        } else if step.name == crate::bundle::DELETE_OLD_MEDIA {
+            let wanted = rows_in(dir, step);
+            if deleted < wanted {
+                ev(Event::Line(&format!(
+                    "Warning: {deleted} of {wanted} replaced media deleted - the rest may still be on the site (Workbench doesn't report a failed delete)"
+                )));
+            }
+        }
         let sums = crate::fixity::collect(dir, &marks);
         if !sums.is_empty() {
             let bundle = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".into());

@@ -131,9 +131,19 @@ impl Site {
     pub fn media_ids(&self, nid: &str) -> Result<Vec<String>> {
         let url = format!("{}/node/{nid}/media?_format=json", self.host());
         let v = self.get_json(&url)?;
-        Ok(v.as_array()
-            .map(|a| a.iter().filter_map(|m| m["mid"][0]["value"].as_u64().map(|n| n.to_string())).collect())
-            .unwrap_or_default())
+        let list = v.as_array().with_context(|| format!("{url} didn't return a list"))?;
+        let ids: Vec<String> = list
+            .iter()
+            .filter_map(|m| {
+                let id = &m["mid"][0]["value"];
+                id.as_u64().map(|n| n.to_string()).or_else(|| id.as_str().map(str::to_string))
+            })
+            .collect();
+        // Media whose ID can't be read would look like none at all.
+        if ids.len() != list.len() {
+            bail!("{url}: couldn't read the IDs of {} media", list.len() - ids.len());
+        }
+        Ok(ids)
     }
 
     /// A node as Drupal's REST API gives it (field -> list of values).

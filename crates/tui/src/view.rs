@@ -395,7 +395,7 @@ fn update_popup(f: &mut Frame, r: &Review, area: Rect) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Overwritten values are saved in update-backup.csv first - an update can't be rolled back. Nothing chosen = leave them as they are. Used from the next re-check (c).",
+        "Overwritten values are saved first (g/logs/organise/...-update-backup-*.csv) - an update can't be rolled back. Nothing chosen = leave them as they are. Used from the next re-check (c).",
         Style::new().fg(Color::DarkGray),
     )));
     let w = area.width.saturating_sub(8).min(96);

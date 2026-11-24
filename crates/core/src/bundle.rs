@@ -214,7 +214,7 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
                 || name == "precheck-report.txt"
                 || name == "items.config.yml"
                 || name == "components.config.yml"
-                || ["update", "update-backup", "delete-old-media"].iter().any(|s| name == format!("{s}.csv") || name == format!("{s}.config.yml"))
+                || ["update", "delete-old-media"].iter().any(|s| name == format!("{s}.csv") || name == format!("{s}.config.yml"))
                 || (name.starts_with("add-media") && (name.ends_with(".csv") || name.ends_with(".config.yml")))
                 || (name.starts_with("terms-") && (name.ends_with(".csv") || name.ends_with(".config.yml")));
             if ours && e.file_type().is_ok_and(|t| t.is_file()) {
@@ -598,7 +598,13 @@ fn existing_steps(ctx: &Ctx, applied: &[Fix], dir: &Path) -> Result<Existing> {
         // The sheet's own title, never one organise made up for a container.
         let title = report.update_columns.iter().any(|c| c == "title") && ctx.table.col("title").is_some();
         if title || !cols.is_empty() {
-            let mut w = csv::Writer::from_path(dir.join("update-backup.csv"))?;
+            // Kept with the logs, timestamped: a later bundle for the same sheet
+            // (the values it saves are already the new ones) never replaces it.
+            let tag = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let logs = ctx.cfg.g_root.join("logs/organise");
+            fs::create_dir_all(&logs)?;
+            let backup = logs.join(format!("{tag}-update-backup-{}.csv", now_stamp().trim_start_matches("unix:")));
+            let mut w = csv::Writer::from_path(&backup)?;
             let mut header = vec!["node_id".to_string()];
             header.extend(report.update_columns.iter().cloned());
             w.write_record(&header)?;

@@ -244,6 +244,8 @@ pub struct Session {
     nodes: HashMap<String, Option<NodeRef>>,
     /// Media IDs per node already on the site (None: the lookup failed).
     media: HashMap<String, Option<Vec<String>>>,
+    /// Nodes already on the site as the REST API gives them (for update backups).
+    node_json: HashMap<String, Option<serde_json::Value>>,
     prefetched: std::collections::HashSet<String>,
     /// Collections whose "what's already on the site" lookup failed in this
     /// check, with the error. Not cached: the next check asks again.
@@ -296,6 +298,7 @@ impl Session {
             lang: None,
             nodes: HashMap::new(),
             media: HashMap::new(),
+            node_json: HashMap::new(),
             prefetched: Default::default(),
             node_errors: Default::default(),
             progress: false,
@@ -401,7 +404,14 @@ impl Session {
 
     /// These nodes as the site has them now (for a backup before an update).
     pub fn node_values(&mut self, nids: &[String]) -> HashMap<String, Option<serde_json::Value>> {
-        self.per_node(nids, "saving the current values of items being updated", |s, n| s.node_json(n)).into_iter().collect()
+        let todo: Vec<String> = nids.iter().filter(|n| !self.node_json.contains_key(*n)).cloned().collect();
+        for (nid, got) in self.per_node(&todo, "reading the current values of items being updated", |s, n| s.node_json(n)) {
+            // A failure isn't kept: the backup must not be skipped for a passing hiccup.
+            if got.is_some() {
+                self.node_json.insert(nid, got);
+            }
+        }
+        nids.iter().map(|n| (n.clone(), self.node_json.get(n).cloned().flatten())).collect()
     }
 
     /// The node already on the site with this identifier. The first lookup under

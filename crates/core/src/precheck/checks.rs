@@ -750,14 +750,14 @@ fn existing_items(s: &mut Session, report: &mut Report) {
             .iter()
             .filter_map(|nid| {
                 let v = now.get(nid)?.as_ref()?;
-                Some((nid.clone(), report.update_columns.iter().map(|c| (c.clone(), v.get(c).map(|x| x.to_string()).unwrap_or_default())).collect()))
+                Some((nid.clone(), report.update_columns.iter().map(|c| (c.clone(), workbench_cell(v.get(c), &s.cfg.sacda.ingest.subdelimiter))).collect()))
             })
             .collect();
     }
     let mut what = Vec::new();
     if !report.update_columns.is_empty() {
         what.push(format!(
-            "their {} overwritten from the sheet (the current values are saved in update-backup.csv; an update can't be rolled back)",
+            "their {} overwritten from the sheet (the current values are saved to g/logs/organise/<bundle>-update-backup-<time>.csv; an update can't be rolled back)",
             report.update_columns.join(", ")
         ));
     }
@@ -776,4 +776,44 @@ fn existing_items(s: &mut Session, report: &mut Report) {
             format!("{n} item(s) already on the site: {}", what.join("; "))
         },
     ));
+}
+
+/// A field from Drupal's REST JSON as a Workbench CSV cell, so a backup can be
+/// fed back to an update: each value's `value` (or `target_id` for a
+/// reference; `rel_type:target_id` for a typed relation), joined by the
+/// subdelimiter.
+fn workbench_cell(field: Option<&serde_json::Value>, subdelim: &str) -> String {
+    let Some(list) = field.and_then(|f| f.as_array()) else { return String::new() };
+    let text = |v: &serde_json::Value| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+    list.iter()
+        .filter_map(|item| {
+            if let Some(v) = item.get("value").filter(|v| !v.is_null()) {
+                return Some(text(v));
+            }
+            let id = text(item.get("target_id")?);
+            Some(match item.get("rel_type").and_then(|r| r.as_str()) {
+                Some(rel) => format!("{rel}:{id}"),
+                None => id,
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(subdelim)
+}
+
+#[cfg(test)]
+mod backup_tests {
+    #[test]
+    fn rest_values_become_workbench_cells() {
+        let v: serde_json::Value = serde_json::json!({
+            "title": [{"value": "Wedding photograph"}],
+            "field_subject": [{"target_id": 12, "target_type": "taxonomy_term"}, {"target_id": 40}],
+            "field_linked_agent": [{"target_id": 7, "rel_type": "relators:cre"}],
+            "field_empty": []
+        });
+        assert_eq!(super::workbench_cell(v.get("title"), "|"), "Wedding photograph");
+        assert_eq!(super::workbench_cell(v.get("field_subject"), "|"), "12|40");
+        assert_eq!(super::workbench_cell(v.get("field_linked_agent"), "|"), "relators:cre:7");
+        assert_eq!(super::workbench_cell(v.get("field_empty"), "|"), "");
+        assert_eq!(super::workbench_cell(None, "|"), "");
+    }
 }
