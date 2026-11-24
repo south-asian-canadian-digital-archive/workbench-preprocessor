@@ -254,16 +254,33 @@ jobs:
           cp ../install/install.sh ../install/install.ps1 .
           chmod +x install.sh
 
-      - name: Create draft release
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+      - name: Checkout history (for the changes since the last release)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          draft: true
-          prerelease: false
-          tag_name: ${{ needs.resolve-version.outputs.release_tag }}
-          name: ${{ needs.resolve-version.outputs.release_tag }} (draft)
-          generate_release_notes: true
-          body: |
-            **Tag:** `${{ needs.resolve-version.outputs.release_tag }}`
+          path: history
+          fetch-depth: 0
+          sparse-checkout: install
+
+      # What changed: the commit subjects since the previous release tag (the
+      # version bumps left out). Edit the release text before publishing to
+      # put a short summary for people above it.
+      - name: Release notes
+        env:
+          TAG: ${{ needs.resolve-version.outputs.release_tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          prev=$(git -C history tag --list 'v*' --sort=-v:refname | grep -vxF "$TAG" | head -1)
+          {
+            echo "## What changed"
+            echo
+            if [ -n "$prev" ]; then
+              git -C history log --no-merges --format='- %s' "$prev..HEAD" | grep -vE '^- (Version [0-9]|Cargo\.lock)' || true
+            else
+              echo "- First release."
+            fi
+            echo
+            cat <<'NOTES'
+            **Tag:** `__TAG__`
 
             ## Checksums
 
@@ -278,13 +295,13 @@ jobs:
             macOS / Linux:
 
             ```bash
-            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
+            curl -fsSL https://github.com/__REPO__/releases/latest/download/install.sh | sh
             ```
 
             Windows (PowerShell):
 
             ```powershell
-            irm https://github.com/${{ github.repository }}/releases/latest/download/install.ps1 | iex
+            irm https://github.com/__REPO__/releases/latest/download/install.ps1 | iex
             ```
 
             The installer picks the right build, checks it against SHASUMS256.txt, puts `organise` on PATH,
@@ -299,6 +316,19 @@ jobs:
             - **windows-x86_64** — `.zip`
 
             Built with release profile (LTO, strip where applicable). Linux/Windows binaries may be UPX-compressed when compression succeeds.
+          NOTES
+          } | sed -e 's/^  //' -e "s|__TAG__|$TAG|g" -e "s|__REPO__|$REPO|g" > notes.md
+          cat notes.md
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          draft: true
+          prerelease: false
+          tag_name: ${{ needs.resolve-version.outputs.release_tag }}
+          name: ${{ needs.resolve-version.outputs.release_tag }}
+          generate_release_notes: true
+          body_path: notes.md
           files: |
             release-upload/*
         env:
