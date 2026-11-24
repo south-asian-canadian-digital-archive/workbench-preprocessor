@@ -142,7 +142,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 continue;
             }
             let auth = s.cfg.sacda.fields.get(col).and_then(|r| r.authority.as_deref()).and_then(authority::by_name);
-            for (idx, raw) in table.get(row, col).split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()).enumerate() {
+            for raw in table.get(row, col).split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()) {
                 let p = parse_value(raw, &def);
                 if p.name.is_empty() {
                     continue;
@@ -158,9 +158,12 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     for h in table.headings.get(&(row.line, col.clone())).into_iter().flatten() {
                         names.push(parse_value(h, &def).name);
                     }
-                    let _ = idx;
                 } else {
                     names.push(p.name.clone());
+                    // A value from the ID column may be replaced by its heading.
+                    for h in table.headings.get(&(row.line, col.clone())).into_iter().flatten() {
+                        names.push(parse_value(h, &def).name);
+                    }
                 }
                 // A number may be a term ID: it's asked as it is.
                 if names.is_empty() {
@@ -215,6 +218,15 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
 
             for (idx, raw) in cell.split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()).enumerate() {
                 let mut p = parse_value(raw, &def);
+                // A value from the ID column that isn't an ID organise can look up
+                // (or a field with no authority): the heading written for it is used.
+                let cell_auth = rule.authority.as_deref().and_then(authority::by_name);
+                if !cell_auth.as_deref().is_some_and(|a| a.is_identifier(&p.name)) {
+                    if let Some(h) = pairing.get(idx).copied().flatten().and_then(|h| sheet_headings?.get(h)) {
+                        p = parse_value(h, &def);
+                        changed = true;
+                    }
+                }
                 let relator = p.relator.clone().or_else(|| rule.relator.clone());
 
                 if col == "field_language" {
@@ -576,7 +588,10 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
 /// check then uses that heading, not the ID). None: no heading for it.
 fn pair_headings(s: &mut Session, headings: Option<&Vec<String>>, ids: &[String], authority: Option<&str>) -> Vec<Option<usize>> {
     let Some(headings) = headings else { return vec![None; ids.len()] };
-    let Some(a) = authority.and_then(authority::by_name) else { return vec![None; ids.len()] };
+    // No authority to ask: by position (the loop then uses the headings).
+    let Some(a) = authority.and_then(authority::by_name) else {
+        return (0..ids.len()).map(|i| (i < headings.len()).then_some(i)).collect();
+    };
     // agrees[i][j]: ID i's heading agrees with sheet heading j.
     let agrees: Vec<Vec<bool>> = ids
         .iter()
