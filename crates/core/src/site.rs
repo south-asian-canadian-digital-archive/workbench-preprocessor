@@ -126,6 +126,21 @@ impl Site {
         Ok(r.status().is_success())
     }
 
+    /// Deletes one term: an ingest's rollback, and the only change organise
+    /// makes to a site itself (nodes are created and deleted by Workbench).
+    /// Already gone counts as done.
+    pub fn delete_term(&self, tid: &str) -> Result<()> {
+        let (user, pass) = self.auth.as_ref().context("no credentials for this site")?;
+        let url = format!("{}/taxonomy/term/{tid}?_format=json", self.host());
+        let r = self.client.delete(&url).basic_auth(user, Some(pass)).send().with_context(|| format!("DELETE {url}"))?;
+        let status = r.status();
+        if status.is_success() || status == StatusCode::NOT_FOUND {
+            Ok(())
+        } else {
+            bail!("{} answered {status}", self.host())
+        }
+    }
+
     /// Logs in with the credentials file by fetching the current user.
     pub fn login(&self) -> Login {
         let Some((user, pass)) = &self.auth else {

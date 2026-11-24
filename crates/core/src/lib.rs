@@ -8,10 +8,11 @@
 //! - `authority`  LCSH / LC name lookups for new terms
 //! - `suggest`    "did you mean" for columns and terms
 //! - `edtf`       EDTF validation and normalisation
-//! - `site`       read-only JSON:API client
+//! - `site`       JSON:API client (reads; deletes terms only for a rollback)
 //! - `bundle`     write CSVs + configs + manifest
 //! - `run`        drive Workbench over a bundle
 //! - `fixity`     keep the checksums Workbench logs for each uploaded file
+//! - `rollback`   what an ingest created, and undoing it
 //! - `doctor`     machine + site health check
 //! - `sheets`     Google Sheets history + per-sheet settings (files folder)
 //! - `progress`   progress + cancel handle for a check running elsewhere
@@ -25,6 +26,7 @@ pub mod fixity;
 pub mod input;
 pub mod precheck;
 pub mod progress;
+pub mod rollback;
 pub mod run;
 pub mod sheets;
 pub mod site;

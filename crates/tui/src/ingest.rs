@@ -27,6 +27,8 @@ enum Msg {
     Line(String),
     Record,
     Paused(u64),
+    Created(sacda::rollback::Created),
+    RolledBack(Result<(), String>),
     Checksums { matched: usize, mismatched: usize, algorithm: String, file: PathBuf },
     Done(Result<(), String>),
 }
@@ -53,6 +55,7 @@ pub fn ingest(cfg: &Config, dir: &Path, check_only: bool) -> anyhow::Result<()> 
                 Event::Line(l) => send(Msg::Line(l.to_string())),
                 Event::Record => send(Msg::Record),
                 Event::Paused { seconds } => send(Msg::Paused(seconds)),
+                Event::Created(c) => send(Msg::Created(c.clone())),
                 Event::Checksums { matched, mismatched, algorithm, file } => {
                     send(Msg::Checksums { matched, mismatched, algorithm: algorithm.to_string(), file: file.to_path_buf() })
                 }
@@ -62,6 +65,7 @@ pub fn ingest(cfg: &Config, dir: &Path, check_only: bool) -> anyhow::Result<()> 
     }
 
     let mut screen = Screen::new(dir, &cfg.g_root, &cfg.workbench_root());
+    screen.cfg = Some(cfg.clone());
     {
         let _guard = TermGuard::enter()?;
         let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
@@ -186,6 +190,18 @@ struct Stage {
     started: Instant,
 }
 
+/// The rollback panel (`r` once the ingest is over).
+#[derive(Debug, Clone, PartialEq)]
+enum Rollback {
+    Closed,
+    /// Choosing what to roll back: one box per `Screen::created` group.
+    Choosing { chosen: Vec<bool>, cursor: usize },
+    /// Asked "delete these?" and waiting for y.
+    Confirm { chosen: Vec<bool> },
+    Running,
+    Finished(Result<(), String>),
+}
+
 struct Screen {
     bundle: String,
     lines: Vec<String>,
@@ -222,6 +238,12 @@ struct Screen {
     checksums: Option<(usize, usize, String, PathBuf)>,
     /// When the step's last record came through (None: none yet this step).
     last_record: Option<Instant>,
+    /// For a rollback: the settings, and what this ingest created (in the order it was made).
+    cfg: Option<Config>,
+    created: Vec<sacda::rollback::Created>,
+    rb: Rollback,
+    /// The rollback's messages while it runs.
+    rb_rx: Option<mpsc::Receiver<Msg>>,
     /// Workbench's adaptive pauses: how many, how long in all, and the last one.
     pauses: usize,
     paused_secs: u64,
@@ -248,6 +270,10 @@ impl Screen {
             pauses: 0,
             paused_secs: 0,
             last_pause: None,
+            cfg: None,
+            created: Vec::new(),
+            rb: Rollback::Closed,
+            rb_rx: None,
             bundle: dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".into()),
             lines: Vec::new(),
             back: 0,
@@ -267,6 +293,10 @@ impl Screen {
             while let Ok(m) = rx.try_recv() {
                 self.take(m);
             }
+            let rb_msgs: Vec<Msg> = self.rb_rx.as_ref().map(|r| r.try_iter().collect()).unwrap_or_default();
+            for m in rb_msgs {
+                self.take(m);
+            }
             term.draw(|f| self.draw(f))?;
             if !event::poll(Duration::from_millis(120))? {
                 continue;
@@ -274,6 +304,9 @@ impl Screen {
             match event::read()? {
                 CtEvent::Key(k) if k.kind != KeyEventKind::Release => {
                     let ctrl_c = k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL);
+                    if self.done.is_some() && self.rollback_key(k.code) {
+                        continue;
+                    }
                     if self.done.is_some() {
                         let failed = matches!(self.done, Some(Err(_)));
                         match k.code {
@@ -350,6 +383,23 @@ impl Screen {
 
     fn take(&mut self, m: Msg) {
         match m {
+            Msg::Stage { label, index, of, total, checking } if self.rb == Rollback::Running => {
+                // A rollback's steps: the bar, not the ingest's stats.
+                self.last_record = None;
+                self.done_records = 0;
+                self.stage = Some(Stage { label, index, of, total, checking, started: Instant::now() });
+            }
+            Msg::Created(c) => self.created.push(c),
+            Msg::RolledBack(r) => {
+                if r.is_ok() {
+                    self.created.clear();
+                }
+                self.note = Some(match &r {
+                    Ok(()) => "Rolled back. Rollback log: g/logs/organise/".to_string() + &self.bundle + "-rollback.log",
+                    Err(e) => format!("Rollback: {e}"),
+                });
+                self.rb = Rollback::Finished(r);
+            }
             Msg::Stage { label, index, of, total, checking } => {
                 self.last_record = None;
                 self.done_records = 0;
@@ -372,7 +422,7 @@ impl Screen {
                 if self.back > 0 {
                     self.back += 1;
                 }
-                if let Some(s) = self.stats.last_mut().filter(|s| !s.checking) {
+                if let Some(s) = self.stats.last_mut().filter(|s| !s.checking && self.rb != Rollback::Running) {
                     match said(&l) {
                         Some(Said::Created) => s.created += 1,
                         Some(Said::Skipped) => s.skipped += 1,
@@ -459,38 +509,52 @@ impl Screen {
         } else if self.show_stats {
             self.draw_stats(f, log);
         }
+        if matches!(self.rb, Rollback::Choosing { .. } | Rollback::Confirm { .. }) {
+            self.draw_rollback(f, log);
+        }
 
         // The bar.
         let tick = SPIN[(self.started.elapsed().as_millis() / 120) as usize % SPIN.len()];
         let total = fmt_dur(self.finished.unwrap_or_else(|| self.started.elapsed()));
+        let rolling = self.rb == Rollback::Running;
         match (&self.done, &self.stage) {
-            (Some(Ok(())), _) => f.render_widget(
+            (Some(Ok(())), _) if !rolling => f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled("✓ Finished", Style::new().fg(Color::Green).bold()), Span::raw(format!("  in {total}"))])),
                 bar,
             ),
-            (Some(Err(e)), _) => f.render_widget(
+            (Some(Err(e)), _) if !rolling => f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled("✗ Stopped: ", Style::new().fg(Color::Red).bold()), Span::raw(e.clone())])),
                 bar,
             ),
-            (None, Some(s)) if !s.checking && s.total > 0 => {
+            (_, Some(s)) if !s.checking && s.total > 0 => {
                 let pos = self.done_records.min(s.total);
                 let el = s.started.elapsed();
                 let eta = eta_text(s.started, self.last_record, pos, s.total);
                 let label = format!("{tick} Step {}/{}  {}  {pos}/{}  {}{eta}{}  (total {total})", s.index, s.of, s.label, s.total, fmt_dur(el), self.pause_note());
                 f.render_widget(Paragraph::new(progress_line(&label, pos as f64 / s.total as f64, bar.width)), bar);
             }
-            (None, Some(s)) => {
+            (_, Some(s)) => {
                 let what = if s.checking { format!("Workbench is checking {}", s.label.trim_start_matches("check ")) } else { s.label.clone() };
                 f.render_widget(
                     Paragraph::new(format!("{tick} Step {}/{}  {what}  {}  (total {total})", s.index, s.of, fmt_dur(s.started.elapsed()))).fg(Color::Cyan),
                     bar,
                 );
             }
-            (None, None) => f.render_widget(Paragraph::new(format!("{tick} Starting  {total}")).fg(Color::Cyan), bar),
+            (_, None) => f.render_widget(Paragraph::new(format!("{tick} Starting  {total}")).fg(Color::Cyan), bar),
         }
 
         // Keys.
-        let hint = if self.confirm_stop {
+        let rb_keys = if self.created.is_empty() || self.rb == Rollback::Running { "" } else { "r roll back · " };
+        let hint = if let Rollback::Confirm { chosen } = &self.rb {
+            Line::from(Span::styled(
+                format!("{} y = delete, any other key = back", self.rollback_question(chosen)),
+                Style::new().fg(Color::Red).bold(),
+            ))
+        } else if self.rb == Rollback::Running {
+            Line::from(Span::styled("Rolling back - deleting what this ingest created ...", Style::new().fg(Color::Yellow)))
+        } else if matches!(self.rb, Rollback::Choosing { .. }) {
+            Line::from(Span::styled("↑↓ move · Space choose · a all · Enter roll back · Esc close", Style::new().fg(Color::DarkGray)))
+        } else if self.confirm_stop {
             Line::from(Span::styled(
                 "Stop the ingest? Workbench is stopped mid-step; what it already created stays on the site. y = stop, any other key = carry on",
                 Style::new().fg(Color::Yellow).bold(),
@@ -501,18 +565,160 @@ impl Screen {
             Line::from(Span::styled(n.clone(), Style::new().fg(Color::Green)))
         } else if matches!(self.done, Some(Err(_))) {
             Line::from(Span::styled(
-                "c copy a debug report (error, traceback, step config) · v show/hide the error · ↑↓ wheel scroll · q close",
+                format!("{rb_keys}c copy a debug report (error, traceback, step config) · v show/hide the error · ↑↓ wheel scroll · q close"),
                 Style::new().fg(Color::DarkGray),
             ))
         } else if self.done.is_some() {
             Line::from(Span::styled(
-                "o open the collection · v show/hide the stats · ↑↓ wheel scroll · q/Enter close (a summary stays in the terminal)",
+                format!("{rb_keys}o open the collection · v show/hide the stats · ↑↓ wheel scroll · q/Enter close (a summary stays in the terminal)"),
                 Style::new().fg(Color::DarkGray),
             ))
         } else {
             Line::from(Span::styled("↑↓ PgUp/PgDn wheel scroll · End follow · q stop the ingest", Style::new().fg(Color::DarkGray)))
         };
         f.render_widget(Paragraph::new(hint), keys);
+    }
+
+    /// Keys for the rollback panel (and `r` to open it). True when used.
+    fn rollback_key(&mut self, code: KeyCode) -> bool {
+        use sacda::rollback::{with_dependencies, without};
+        match self.rb.clone() {
+            Rollback::Running => {
+                if matches!(code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter) {
+                    self.note = Some("Rolling back - wait for it to finish".into());
+                    return true;
+                }
+                false
+            }
+            Rollback::Confirm { chosen } => {
+                if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                    self.start_rollback(&chosen);
+                } else {
+                    self.rb = Rollback::Choosing { chosen, cursor: 0 };
+                }
+                true
+            }
+            Rollback::Choosing { mut chosen, mut cursor } => {
+                let last = self.created.len().saturating_sub(1);
+                match code {
+                    KeyCode::Up | KeyCode::Char('k') => cursor = cursor.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => cursor = (cursor + 1).min(last),
+                    KeyCode::Char(' ') => {
+                        chosen = if chosen[cursor] {
+                            without(&self.created, &chosen, cursor)
+                        } else {
+                            let mut c = chosen.clone();
+                            c[cursor] = true;
+                            with_dependencies(&self.created, &c)
+                        }
+                    }
+                    KeyCode::Char('a') => chosen = vec![true; self.created.len()],
+                    KeyCode::Enter if chosen.iter().any(|c| *c) => {
+                        self.rb = Rollback::Confirm { chosen };
+                        return true;
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
+                        self.rb = Rollback::Closed;
+                        return true;
+                    }
+                    _ => {}
+                }
+                self.rb = Rollback::Choosing { chosen, cursor };
+                true
+            }
+            Rollback::Closed | Rollback::Finished(_) => {
+                if code == KeyCode::Char('r') && !self.created.is_empty() {
+                    self.show_stats = false;
+                    self.show_error = false;
+                    self.rb = Rollback::Choosing { chosen: vec![true; self.created.len()], cursor: 0 };
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    fn site(&self) -> String {
+        sacda::bundle::Manifest::read(&self.dir).map(|m| m.site).unwrap_or_default()
+    }
+
+    /// "Delete 6 item node(s), 4 component node(s) and 2 subject term(s) from dev?"
+    fn rollback_question(&self, chosen: &[bool]) -> String {
+        let parts: Vec<String> = self
+            .created
+            .iter()
+            .zip(chosen)
+            .filter(|(_, c)| **c)
+            .map(|(g, _)| match &g.kind {
+                sacda::rollback::Kind::Items => format!("{} item node(s)", g.entries.len()),
+                sacda::rollback::Kind::Components => format!("{} component node(s)", g.entries.len()),
+                sacda::rollback::Kind::Terms(v) => format!("{} {v} term(s)", g.entries.len()),
+            })
+            .collect();
+        format!("Delete {} from {}?", parts.join(", "), self.site())
+    }
+
+    fn start_rollback(&mut self, chosen: &[bool]) {
+        let Some(cfg) = self.cfg.clone() else {
+            self.note = Some("Can't roll back from here - no settings".into());
+            self.rb = Rollback::Closed;
+            return;
+        };
+        let groups: Vec<_> = self.created.iter().zip(chosen).filter(|(_, c)| **c).map(|(g, _)| g.clone()).collect();
+        let (site, bundle) = (self.site(), self.bundle.clone());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _job = sacda::progress::enter(Arc::new(Progress::default()));
+            let send = |m: Msg| {
+                let _ = tx.send(m);
+            };
+            let r = run::rollback(&cfg, &site, &bundle, &groups, &mut |e| match e {
+                Event::Stage { label, index, of, total, checking } => {
+                    send(Msg::Stage { label: label.to_string(), index, of, total, checking })
+                }
+                Event::Line(l) => send(Msg::Line(l.to_string())),
+                Event::Record => send(Msg::Record),
+                _ => {}
+            });
+            send(Msg::RolledBack(r.map_err(|e| format!("{e:#}"))));
+        });
+        self.rb_rx = Some(rx);
+        self.rb = Rollback::Running;
+        self.note = None;
+        self.back = 0;
+    }
+
+    fn draw_rollback(&self, f: &mut Frame, over: ratatui::layout::Rect) {
+        use ratatui::widgets::Clear;
+        let (chosen, cursor) = match &self.rb {
+            Rollback::Choosing { chosen, cursor } => (chosen.clone(), Some(*cursor)),
+            Rollback::Confirm { chosen } => (chosen.clone(), None),
+            _ => return,
+        };
+        let mut lines = vec![
+            Line::from(format!("What this ingest created on {} - choose what to delete:", self.site())),
+            Line::from(""),
+        ];
+        for (i, g) in self.created.iter().enumerate() {
+            let mark = if chosen[i] { "[x]" } else { "[ ]" };
+            let style = if cursor == Some(i) { Style::new().fg(Color::Black).bg(Color::Cyan) } else { Style::new() };
+            lines.push(Line::from(Span::styled(format!(" {mark} {} ", g.kind.describe(g.entries.len())), style)));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Deleted in order: items, then collections/series/files, then terms. Collections take their items with them, and terms take every node (they use the terms).",
+            Style::new().fg(Color::DarkGray),
+        )));
+        let w = over.width.saturating_sub(8).min(110);
+        let h = (lines.len() as u16 + 4).min(over.height);
+        let rect = ratatui::layout::Rect::new(over.x + (over.width - w) / 2, over.y + over.height.saturating_sub(h) / 3, w, h);
+        f.render_widget(Clear, rect);
+        f.render_widget(
+            Paragraph::new(lines)
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .block(Block::bordered().title(" Roll back ").border_style(Style::new().fg(Color::Yellow))),
+            rect,
+        );
     }
 
     fn close_step(&mut self) {

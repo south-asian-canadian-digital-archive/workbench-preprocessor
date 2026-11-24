@@ -20,6 +20,8 @@ pub enum Event<'a> {
     Line(&'a str),
     /// Workbench finished one record: created, skipped as already there, or failed.
     Record,
+    /// What a Workbench job created, for a rollback (sent also when it stopped partway).
+    Created(&'a crate::rollback::Created),
     /// Workbench waited this many seconds because the site answered slowly
     /// (its `adaptive_pause`). It says so only in its log, read as it runs.
     Paused { seconds: u64 },
@@ -258,6 +260,91 @@ fn workbench(cfg: &Config, config: &Path, watch: &[(std::path::PathBuf, u64)], e
     Ok((ok, errors))
 }
 
+/// What a step's Workbench run created: its terms (from the log) or its
+/// nodes (from the rollback files Workbench wrote), per config.
+fn created_by(step: &Step, configs: &[std::path::PathBuf], marks: &[(std::path::PathBuf, std::path::PathBuf, u64)], since: std::time::SystemTime) -> Vec<crate::rollback::Created> {
+    use crate::rollback::{logged_terms, rollback_file, rollback_nodes, yaml_value, Created, Kind};
+    if let Some(vocab) = step.name.strip_prefix("terms-") {
+        let terms: Vec<_> = marks.iter().flat_map(|(_, log, from)| logged_terms(log, *from)).collect();
+        return if terms.is_empty() { vec![] } else { vec![Created { kind: Kind::Terms(vocab.to_string()), rollback: None, entries: terms }] };
+    }
+    configs
+        .iter()
+        .filter_map(|c| {
+            let text = std::fs::read_to_string(c).ok()?;
+            let file = rollback_file(Path::new(&yaml_value(&text, "rollback_config_file_path")?), since)?;
+            let entries = rollback_nodes(&file);
+            let items = c.file_name().is_some_and(|n| n.to_string_lossy().starts_with("items"));
+            (!entries.is_empty()).then_some(Created { kind: if items { Kind::Items } else { Kind::Components }, rollback: Some(file), entries })
+        })
+        .collect()
+}
+
+/// Undo what an ingest created: the chosen groups, items first, then
+/// components, then terms. Nodes go through Workbench (their rollback config,
+/// media and files included); terms through the site's REST API.
+pub fn rollback(cfg: &Config, site: &str, bundle: &str, groups: &[crate::rollback::Created], ev: &mut dyn FnMut(Event)) -> Result<()> {
+    use crate::rollback::Kind;
+    let mut groups: Vec<&crate::rollback::Created> = groups.iter().collect();
+    groups.sort_by_key(|g| g.kind.order());
+    let of = groups.len();
+    let log = cfg.g_root.join("logs/organise").join(format!("{bundle}-rollback.log"));
+    let mut failed = 0;
+    for (i, g) in groups.iter().enumerate() {
+        let label = format!("roll back {}", match &g.kind {
+            Kind::Items => "items".to_string(),
+            Kind::Components => "components".to_string(),
+            Kind::Terms(v) => format!("{v} terms"),
+        });
+        ev(Event::Line(&format!("\n== {label} ({}) ==", g.entries.len())));
+        ev(Event::Stage { label: &label, index: i + 1, of, total: g.entries.len(), checking: false });
+        match &g.kind {
+            Kind::Terms(_) => {
+                let s = crate::site::Site::new(cfg, Some(site))?;
+                for (tid, name) in &g.entries {
+                    if crate::progress::cancelled_here() {
+                        bail!("rollback stopped partway");
+                    }
+                    match s.delete_term(tid) {
+                        Ok(()) => ev(Event::Line(&format!("Term {tid} (\"{name}\") deleted."))),
+                        Err(e) => {
+                            failed += 1;
+                            ev(Event::Line(&format!("ERROR: term {tid} (\"{name}\") not deleted: {e:#}")));
+                        }
+                    }
+                    ev(Event::Record);
+                }
+            }
+            _ => {
+                let Some(file) = &g.rollback else { continue };
+                let config = crate::rollback::runnable_config(file, &log).with_context(|| format!("can't read {}", file.display()))?;
+                let ok = spawn_workbench(cfg, &config, false, &[], &mut |out| {
+                    if let Out::Line(l) = out {
+                        let t = l.trim_start();
+                        if t.starts_with("Node ") && (t.contains(" deleted") || t.contains("skipping delete")) {
+                            ev(Event::Line(&l));
+                            ev(Event::Record);
+                        } else {
+                            if is_error_line(&l) {
+                                failed += 1;
+                            }
+                            ev(Event::Line(&l));
+                        }
+                    }
+                })?;
+                if !ok {
+                    bail!("Workbench stopped while deleting {label} - see {}", log.display());
+                }
+            }
+        }
+    }
+    if failed > 0 {
+        bail!("rollback finished with {failed} error(s) - see the output above");
+    }
+    ev(Event::Line("\nRollback finished."));
+    Ok(())
+}
+
 /// Workbench `--check` exits 0 even when it lists problems, so its output is
 /// what tells us. Captured, and only shown if it failed.
 fn workbench_check(cfg: &Config, config: &Path) -> Result<(bool, String)> {
@@ -326,7 +413,13 @@ pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn 
             .collect();
         let marks = crate::fixity::mark(&configs);
         let watch: Vec<_> = marks.iter().map(|(_, log, len)| (log.clone(), *len)).collect();
-        let (ok, mut errors) = workbench(cfg, &dir.join(&step.config), &watch, ev)?;
+        let since = std::time::SystemTime::now();
+        let result = workbench(cfg, &dir.join(&step.config), &watch, ev);
+        // What it created, also when it failed or was stopped: a rollback needs it most then.
+        for c in created_by(step, &configs, &marks, since) {
+            ev(Event::Created(&c));
+        }
+        let (ok, mut errors) = result?;
         let sums = crate::fixity::collect(dir, &marks);
         if !sums.is_empty() {
             let bundle = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".into());
