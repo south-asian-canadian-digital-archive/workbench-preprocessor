@@ -154,9 +154,11 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                         names.push(res.label.clone());
                         uris.push(res.uri.clone());
                     }
-                    if let Some(h) = table.headings.get(&(row.line, col.clone())).and_then(|hs| hs.get(idx)) {
+                    // Any heading of the cell can end up paired with this ID.
+                    for h in table.headings.get(&(row.line, col.clone())).into_iter().flatten() {
                         names.push(parse_value(h, &def).name);
                     }
+                    let _ = idx;
                 } else {
                     names.push(p.name.clone());
                 }
@@ -206,6 +208,10 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
             let mut vals = Vec::new();
             let mut rewritten: Vec<String> = Vec::new();
             let mut changed = false;
+            // Which of the sheet's headings each ID in this cell goes with.
+            let ids: Vec<String> = cell.split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(|v| parse_value(v, &def).name).collect();
+            let sheet_headings = table.headings.get(&(row.line, col.clone()));
+            let pairing = pair_headings(s, sheet_headings, &ids, rule.authority.as_deref());
 
             for (idx, raw) in cell.split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()).enumerate() {
                 let mut p = parse_value(raw, &def);
@@ -245,12 +251,14 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 let mut link: Option<Resolved> = None;
                 if let Some(a) = auth.as_deref() {
                     if a.is_identifier(&p.name) {
-                        match s.authorities.resolve(a, &p.name) {
+                        let typed_for_id = pairing.get(idx).copied().flatten().and_then(|h| sheet_headings?.get(h)).cloned();
+                        let resolved = s.authorities.resolve(a, &p.name);
+                        match resolved.as_ref().map(Option::clone).map_err(|e| anyhow::anyhow!("{e:#}")) {
                             Ok(Some(res)) => {
                                 // The ID and the heading typed beside it (same position) should
                                 // name the same thing. When they don't, the sheet's heading wins:
                                 // a mistyped ID lands on another real heading.
-                                let typed = table.headings.get(&(row.line, col.clone())).and_then(|hs| hs.get(idx));
+                                let typed = typed_for_id.as_ref();
                                 match typed {
                                     Some(h) if !suggest::headings_agree(h, &res.label) => {
                                         s.stick(
@@ -258,7 +266,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                                                 Warning,
                                                 "terms",
                                                 format!(
-                                                    "{col}: {} is \"{}\" at {}, but the sheet's heading beside it is \"{h}\" - used the sheet's heading; correct or remove the ID",
+                                                    "{col}: {} is \"{}\" at {}, which none of the sheet's headings match - skipped the ID and kept the sheet's heading \"{h}\"; correct or remove the ID",
                                                     p.name,
                                                     res.label,
                                                     a.name().to_uppercase()
@@ -287,24 +295,33 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                                     }
                                 }
                             }
-                            Ok(None) => {
-                                report.findings.push(
-                                    Finding::new(Error, "terms", format!("{col}: id.loc.gov has no heading for {} - a typo, or a withdrawn ID? Use the current ID or the heading", p.name))
-                                        .at(row.line, id.clone())
-                                        .with_link(format!("https://id.loc.gov/search/?q={}", crate::site::urlencode(&p.name))),
-                                );
-                                vals.push(Val::Blocked);
-                                rewritten.push(raw.to_string());
-                                continue;
-                            }
-                            Err(e) => {
-                                report.findings.push(
-                                    Finding::new(Error, "terms", format!("{col}: couldn't look up {}: {e:#}", p.name))
-                                        .at(row.line, id.clone()),
-                                );
-                                vals.push(Val::Blocked);
-                                rewritten.push(raw.to_string());
-                                continue;
+                            Ok(None) | Err(_) => {
+                                let why = match &resolved {
+                                    Err(e) => format!("couldn't look up {} ({e:#})", p.name),
+                                    _ => format!("id.loc.gov has no heading for {} (a typo, or a withdrawn ID?)", p.name),
+                                };
+                                // The written heading is kept; a bad ID is skipped.
+                                match typed_for_id.clone() {
+                                    Some(h) => {
+                                        s.stick(
+                                            Finding::new(Warning, "terms", format!("{col}: {why} - skipped the ID and kept the sheet's heading \"{h}\"; correct or remove the ID"))
+                                                .at(row.line, id.clone())
+                                                .with_link(format!("https://id.loc.gov/search/?q={}", crate::site::urlencode(&p.name))),
+                                        );
+                                        p.name = parse_value(&h, &def).name;
+                                        changed = true;
+                                    }
+                                    None => {
+                                        report.findings.push(
+                                            Finding::new(Error, "terms", format!("{col}: {why} - use the current ID or the heading"))
+                                                .at(row.line, id.clone())
+                                                .with_link(format!("https://id.loc.gov/search/?q={}", crate::site::urlencode(&p.name))),
+                                        );
+                                        vals.push(Val::Blocked);
+                                        rewritten.push(raw.to_string());
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
@@ -551,6 +568,63 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
     report.new_terms = new_terms;
 }
 
+/// For a cell of authority IDs with the sheet's headings beside them: which
+/// heading each ID goes with. An ID whose heading (at id.loc.gov) agrees with
+/// one of the sheet's headings is paired with it wherever it's listed - the
+/// two columns needn't be in the same order; the same position wins a tie.
+/// IDs that agree with none take the headings left over, in order (and the
+/// check then uses that heading, not the ID). None: no heading for it.
+fn pair_headings(s: &mut Session, headings: Option<&Vec<String>>, ids: &[String], authority: Option<&str>) -> Vec<Option<usize>> {
+    let Some(headings) = headings else { return vec![None; ids.len()] };
+    let Some(a) = authority.and_then(authority::by_name) else { return vec![None; ids.len()] };
+    // agrees[i][j]: ID i's heading agrees with sheet heading j.
+    let agrees: Vec<Vec<bool>> = ids
+        .iter()
+        .map(|id| {
+            let label = if a.is_identifier(id) { s.authorities.resolve(a.as_ref(), id).ok().flatten().map(|r| r.label) } else { None };
+            headings.iter().map(|h| label.as_deref().is_some_and(|l| suggest::headings_agree(h, l))).collect()
+        })
+        .collect();
+    let matched = match_by_agreement(&agrees, headings.len());
+    // Left-over headings go to left-over IDs, in order.
+    let used: std::collections::HashSet<usize> = matched.iter().flatten().copied().collect();
+    let mut spare = (0..headings.len()).filter(|j| !used.contains(j));
+    matched.into_iter().map(|m| m.or_else(|| spare.next())).collect()
+}
+
+/// The most IDs paired with headings they agree with, one heading each
+/// (Kuhn's augmenting paths - a cell holds a handful). Same positions are
+/// tried first, so a cell in order keeps its order.
+fn match_by_agreement(agrees: &[Vec<bool>], headings: usize) -> Vec<Option<usize>> {
+    fn try_assign(i: usize, agrees: &[Vec<bool>], owner: &mut [Option<usize>], seen: &mut [bool]) -> bool {
+        let n = owner.len();
+        // Own position first, then the rest.
+        let order = std::iter::once(i).filter(|j| *j < n).chain((0..n).filter(move |j| *j != i));
+        for j in order {
+            if agrees[i].get(j).copied().unwrap_or(false) && !seen[j] {
+                seen[j] = true;
+                if owner[j].is_none_or(|k| try_assign(k, agrees, owner, seen)) {
+                    owner[j] = Some(i);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    let mut owner: Vec<Option<usize>> = vec![None; headings];
+    for i in 0..agrees.len() {
+        let mut seen = vec![false; headings];
+        try_assign(i, agrees, &mut owner, &mut seen);
+    }
+    let mut out = vec![None; agrees.len()];
+    for (j, o) in owner.iter().enumerate() {
+        if let Some(i) = o {
+            out[*i] = Some(j);
+        }
+    }
+    out
+}
+
 fn same_uri(a: &str, b: &str) -> bool {
     let norm = |u: &str| u.trim().trim_end_matches('/').replace("https://", "http://");
     norm(a) == norm(b)
@@ -613,6 +687,22 @@ mod tests {
             targets: targets.iter().map(|s| s.to_string()).collect(),
             allowed_values: vec![],
         }
+    }
+
+    #[test]
+    fn ids_pair_with_the_heading_they_agree_with() {
+        // In order: each with its own.
+        let a = vec![vec![true, false], vec![false, true]];
+        assert_eq!(match_by_agreement(&a, 2), vec![Some(0), Some(1)]);
+        // Listed in another order: found anyway.
+        let a = vec![vec![false, false, true], vec![true, false, false], vec![false, true, false]];
+        assert_eq!(match_by_agreement(&a, 3), vec![Some(2), Some(0), Some(1)]);
+        // Both agree with heading 0; ID 1 also with 1: everyone gets one.
+        let a = vec![vec![true, false], vec![true, true]];
+        assert_eq!(match_by_agreement(&a, 2), vec![Some(0), Some(1)]);
+        // An ID that agrees with nothing stays unpaired here.
+        let a = vec![vec![false, false], vec![false, true]];
+        assert_eq!(match_by_agreement(&a, 2), vec![None, Some(1)]);
     }
 
     #[test]
