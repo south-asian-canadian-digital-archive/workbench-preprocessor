@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Gauge, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::{Frame, Terminal};
 use sacda::config::Config;
 use sacda::progress::Progress;
@@ -456,10 +456,7 @@ impl Screen {
                 let el = s.started.elapsed();
                 let eta = if pos > 0 { format!(", about {} left", fmt_dur(el.mul_f64((s.total - pos) as f64 / pos as f64))) } else { String::new() };
                 let label = format!("{tick} Step {}/{}  {}  {pos}/{}  {}{eta}  (total {total})", s.index, s.of, s.label, s.total, fmt_dur(el));
-                f.render_widget(
-                    Gauge::default().gauge_style(Style::new().fg(Color::Cyan).bg(Color::DarkGray)).ratio(pos as f64 / s.total as f64).label(label),
-                    bar,
-                );
+                f.render_widget(Paragraph::new(progress_line(&label, pos as f64 / s.total as f64, bar.width)), bar);
             }
             (None, Some(s)) => {
                 let what = if s.checking { format!("Workbench is checking {}", s.label.trim_start_matches("check ")) } else { s.label.clone() };
@@ -836,6 +833,22 @@ fn fmt_dur(d: Duration) -> String {
     }
 }
 
+/// The progress bar with its text on it: black on cyan where it's filled,
+/// white on dark grey where it isn't, so every letter stays readable as the
+/// bar passes under it (a Gauge gives the label one colour, which vanishes
+/// into the bar).
+fn progress_line(label: &str, ratio: f64, width: u16) -> Line<'static> {
+    let width = width as usize;
+    let filled = ((ratio.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
+    let mut text: Vec<char> = format!(" {label}").chars().collect();
+    text.resize(width.max(text.len()), ' ');
+    text.truncate(width);
+    let done = Style::new().fg(Color::Black).bg(Color::Cyan).bold();
+    let todo = Style::new().fg(Color::White).bg(Color::Indexed(238));
+    let (a, b) = text.split_at(filled);
+    Line::from(vec![Span::styled(a.iter().collect::<String>(), done), Span::styled(b.iter().collect::<String>(), todo)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,6 +911,18 @@ mod tests {
         assert_eq!(st, vec![(1, 1, 0), (1, 0, 1)]);
         assert_eq!(s.main_link().as_deref(), Some("https://h/node/5"));
         assert!(s.stats_lines().iter().any(|l| l == "Collection 2099_01 (new): https://h/node/5"));
+    }
+
+    #[test]
+    fn bar_text_is_split_at_the_fill() {
+        let l = progress_line("Step 1/2  3/10", 0.5, 20);
+        let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text, " Step 1/2  3/10     ");
+        assert_eq!(l.spans[0].content.chars().count(), 10);
+        assert_ne!(l.spans[0].style.bg, l.spans[1].style.bg);
+        // Narrower than the text: cut, never wider than the row.
+        let l = progress_line("a long label that does not fit", 1.0, 8);
+        assert_eq!(l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>(), 8);
     }
 
     #[test]
