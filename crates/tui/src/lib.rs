@@ -785,10 +785,18 @@ impl App {
                 self.select_input(&p.url);
                 self.status = format!(
                     "Pulled \"{}\" ({} rows). Set its files folder with f (and m for file names), then Enter to check it.",
-                    p.label, p.rows
+                    p.title.as_deref().unwrap_or(&p.label),
+                    p.rows
                 );
             }
             Ok(Done::Opened { input, full, table, session, settled, accepted }) => {
+                // A check downloads a link again: keep its name up to date (older entries had none).
+                if let Some(t) = sacda::input::sheet_title(&input) {
+                    if self.sheets.get(&input).is_some_and(|e| e.title != t) {
+                        self.sheets.entry(&input).title = t;
+                        self.sheets.save();
+                    }
+                }
                 let (fixed, report, applied) = settled;
                 let mut review = Review {
                     input_name: input,
@@ -1461,11 +1469,21 @@ fn review_key(r: &mut Review, key: KeyEvent) -> Action {
             r.tab = Tab::Terms;
             Action::None
         }
-        KeyCode::Tab => {
+        // Next / previous view: Tab, l or →  /  Shift+Tab, h or ←.
+        KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
             r.tab = match r.tab {
                 Tab::Findings => Tab::Tree,
                 Tab::Tree => Tab::Terms,
                 Tab::Terms => Tab::Findings,
+            };
+            r.scroll = 0;
+            Action::None
+        }
+        KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+            r.tab = match r.tab {
+                Tab::Findings => Tab::Terms,
+                Tab::Tree => Tab::Findings,
+                Tab::Terms => Tab::Tree,
             };
             r.scroll = 0;
             Action::None

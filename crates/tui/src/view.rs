@@ -201,6 +201,23 @@ fn register_chips(app: &App, line: &Line, area: Rect) {
     }
 }
 
+/// What to call a sheet: a Google Sheet by its own name and the collection
+/// most of its rows describe ("ingest_box002 - primary - 2024_19 Chandra
+/// Bodalia fonds"), a file by its file name.
+fn sheet_name(app: &App, input: &str) -> String {
+    if !sacda::source::is_url(input) {
+        return std::path::Path::new(input).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| input.to_string());
+    }
+    let e = app.sheets.get(input);
+    let title = e.map(|e| e.title.clone()).filter(|t| !t.is_empty());
+    let label = e.map(|e| e.label.clone()).filter(|l| !l.is_empty());
+    match (title, label) {
+        (Some(t), Some(l)) => format!("{t} - {l}"),
+        (Some(n), None) | (None, Some(n)) => n,
+        (None, None) => "Google Sheet".into(),
+    }
+}
+
 fn header(f: &mut Frame, app: &App, area: Rect) {
     let site = app.site();
     let host = app.cfg.sacda.sites.get(site).map(|s| s.host.clone()).unwrap_or_default();
@@ -217,7 +234,7 @@ fn header(f: &mut Frame, app: &App, area: Rect) {
     if let Screen::Review(r) = &app.screen {
         let e = r.report.count(Severity::Error);
         let w = r.report.count(Severity::Warning);
-        spans.push(Span::raw(format!("   {}", short(&r.input_name, 40))));
+        spans.push(Span::styled(format!("   {}", clip(&sheet_name(app, &r.input_name), 70)), Style::new().bold()));
         if let Ok(Some(sub)) = app.subset_for(&r.input_name) {
             spans.push(Span::styled(format!("  only {}", sub.describe()), Style::new().fg(Color::Yellow).bold()));
         }
@@ -243,11 +260,12 @@ fn inner(r: Rect) -> Rect {
     Rect::new(r.x + 1, r.y + 1, r.width.saturating_sub(2), r.height.saturating_sub(2))
 }
 
-fn short(s: &str, n: usize) -> String {
+/// The start of `s`, at most `n` characters (a name reads from the front).
+fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
     } else {
-        format!("...{}", s.chars().rev().take(n - 3).collect::<String>().chars().rev().collect::<String>())
+        format!("{}…", s.chars().take(n - 1).collect::<String>())
     }
 }
 
@@ -290,7 +308,7 @@ fn footer(app: &App) -> Line<'static> {
                 k.push(("w", "write"));
                 k.push(("i", "write+ingest"));
             }
-            k.push(("Tab", "view"));
+            k.push(("Tab", "view (h/l)"));
             if app.job.is_none() {
                 k.push(("Esc", "back"));
             }
@@ -315,10 +333,18 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
                 PickRow::Header(h) => ListItem::new(Line::from(Span::styled(format!("── {h} "), Style::new().fg(ACCENT).bold()))),
                 PickRow::Sheet(input) if sacda::source::is_url(input) => {
                     let e = app.sheets.get(input);
-                    let label = e.map(|e| e.label.clone()).filter(|l| !l.is_empty()).unwrap_or_else(|| "Google Sheet".into());
+                    // The sheet's own name first; the collection it describes after it.
+                    let title = e.map(|e| e.title.clone()).filter(|t| !t.is_empty());
+                    let label = e.map(|e| e.label.clone()).filter(|l| !l.is_empty());
                     let rows = e.map(|e| e.rows).unwrap_or(0);
                     let fresh = app.just_pulled.as_deref() == Some(input.as_str());
-                    let mut spans = vec![Span::styled(label, if fresh { Style::new().fg(Color::Green).bold() } else { Style::new().bold() })];
+                    let head = title.clone().or_else(|| label.clone()).unwrap_or_else(|| "Google Sheet".into());
+                    let mut spans = vec![Span::styled(head, if fresh { Style::new().fg(Color::Green).bold() } else { Style::new().bold() })];
+                    // "ingest_box002 - primary - 2024_19 Chandra Bodalia fonds": the sheet, then the
+                    // collection most of its rows describe.
+                    if let (Some(_), Some(l)) = (&title, &label) {
+                        spans.push(Span::raw(format!(" - {l}")));
+                    }
                     let span = e.map(|e| e.span.clone()).unwrap_or_default();
                     spans.push(Span::styled(
                         format!("  {rows} rows{}", if span.is_empty() { String::new() } else { format!(", {span}") }),
@@ -377,11 +403,7 @@ fn pick(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     match &selected {
         Some(sel) => {
-            let name = if sacda::source::is_url(sel) {
-                app.sheets.get(sel).map(|e| e.label.clone()).unwrap_or_else(|| "this Google Sheet".into())
-            } else {
-                std::path::Path::new(sel).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-            };
+            let name = sheet_name(app, sel);
             lines.push(Line::from(vec![Span::raw("For "), Span::styled(name, Style::new().bold()), Span::raw(":")]));
         }
         None => lines.push(Line::from(Span::styled("Pick a sheet, or paste a link with u", Style::new().fg(Color::DarkGray)))),

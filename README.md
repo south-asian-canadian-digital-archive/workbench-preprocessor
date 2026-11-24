@@ -139,7 +139,7 @@ If the ingest fails, an error panel opens. Press `c` to copy a debug report. Sen
 | `r` | Read the sheet again. |
 | `s` / `f` | Change the rows / the files folder. |
 | `w` / `i` | Write / write and ingest. |
-| `Tab`, `1` `2` `3` | Change the view. |
+| `Tab`, `h` `l`, `1` `2` `3` | Change the view. |
 | Esc | Go back. |
 
 **Ingest screen**

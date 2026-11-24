@@ -15,7 +15,11 @@ use std::path::PathBuf;
 pub struct Sheet {
     /// The Google Sheets link or the local path, as given.
     pub input: String,
-    /// "2024_19 Chandra Bodalia fonds" - what to call it in a list.
+    /// "ingest_box002 - primary": a Google Sheet's own name (document - tab),
+    /// as Google gives it with the download. Empty for files and old entries.
+    #[serde(default)]
+    pub title: String,
+    /// "2024_19 Chandra Bodalia fonds": the collection it describes.
     #[serde(default)]
     pub label: String,
     #[serde(default)]
@@ -111,6 +115,9 @@ impl Sheets {
     /// Record a pulled link and keep the history to its size.
     pub fn remember(&mut self, pulled: &Pulled) {
         let e = self.entry(&pulled.url);
+        if let Some(t) = &pulled.title {
+            e.title = t.clone();
+        }
         e.label = pulled.label.clone();
         e.rows = pulled.rows;
         e.span = pulled.span.clone();
@@ -129,6 +136,8 @@ impl Sheets {
 pub struct Pulled {
     pub url: String,
     pub path: PathBuf,
+    /// The sheet's own name, when Google sent it.
+    pub title: Option<String>,
     pub label: String,
     pub rows: usize,
     pub span: String,
@@ -148,7 +157,7 @@ pub fn pull(url: &str, cfg: &Config) -> Result<Pulled> {
     });
     fs::write(&path, &text).with_context(|| format!("can't write {}", path.display()))?;
     let table = source::load_for(&path.to_string_lossy(), None, cfg)?;
-    Ok(Pulled { url: url.trim().to_string(), label: label_of(&table, cfg), rows: table.rows.len(), span: span_of(&table), path })
+    Ok(Pulled { url: url.trim().to_string(), title: crate::input::sheet_title(url), label: label_of(&table, cfg), rows: table.rows.len(), span: span_of(&table), path })
 }
 
 /// Temporary files organise keeps: downloaded sheets and the id.loc.gov

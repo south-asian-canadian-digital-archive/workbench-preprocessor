@@ -230,7 +230,54 @@ impl SheetLink {
     }
 }
 
-/// Download a Google Sheet (the tab the link names) as CSV text.
+/// Each downloaded sheet's own name, by export link, from the last download.
+static TITLES: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The sheet's name as Google gave it with the last download of `link`
+/// ("ingest_box002 - primary": the document, then the tab).
+pub fn sheet_title(link: &str) -> Option<String> {
+    let key = SheetLink::parse(link).ok()?.export_url();
+    TITLES.lock().ok()?.get(&key).cloned()
+}
+
+/// The file name in a Content-Disposition header, without `.csv`. The
+/// `filename*` form is the exact one (`filename` has spaces etc. replaced).
+fn disposition_title(v: &str) -> Option<String> {
+    let param = |name: &str| {
+        v.split(';').map(str::trim).find_map(|p| {
+            let (k, val) = p.split_once('=')?;
+            k.trim().eq_ignore_ascii_case(name).then(|| val.trim().trim_matches('"').to_string())
+        })
+    };
+    let name = match param("filename*") {
+        Some(enc) => {
+            let enc = enc.split_once("''").map(|(_, rest)| rest.to_string()).unwrap_or(enc);
+            let b = enc.as_bytes();
+            let mut out = Vec::with_capacity(b.len());
+            let mut i = 0;
+            while i < b.len() {
+                let hex = |c: u8| (c as char).to_digit(16);
+                match (b[i], b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex)) {
+                    (b'%', Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                    }
+                    (c, _, _) => {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+            }
+            String::from_utf8_lossy(&out).to_string()
+        }
+        None => param("filename")?,
+    };
+    let name = name.strip_suffix(".csv").or_else(|| name.strip_suffix(".CSV")).unwrap_or(&name).trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Download a Google Sheet (the tab the link names) as CSV text. Its name
+/// is kept for `sheet_title`.
 pub fn fetch_sheet(link: &str) -> Result<String> {
     let url = SheetLink::parse(link)?.export_url();
     let response = reqwest::blocking::get(&url).with_context(|| format!("couldn't download {url}"))?;
@@ -242,10 +289,18 @@ pub fn fetch_sheet(link: &str) -> Result<String> {
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.contains("text/html"));
+    let title = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(disposition_title);
     let text = response.text().context("couldn't read the sheet Google sent")?;
     // A sheet that isn't shared answers 200 with Google's sign-in page.
     if html || text.trim_start().starts_with("<!DOCTYPE html") || text.trim_start().starts_with("<html") {
         bail!("Google sent a web page instead of the sheet - share it as \"Anyone with the link can view\" and try again");
+    }
+    if let (Some(t), Ok(mut titles)) = (title, TITLES.lock()) {
+        titles.insert(url, t);
     }
     Ok(text)
 }
@@ -253,6 +308,15 @@ pub fn fetch_sheet(link: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sheet_name_from_the_download() {
+        let h = r#"attachment; filename="ingest_box002-primary.csv"; filename*=UTF-8''ingest_box002%20-%20primary.csv"#;
+        assert_eq!(disposition_title(h).as_deref(), Some("ingest_box002 - primary"));
+        assert_eq!(disposition_title(r#"attachment; filename="Box 3.csv""#).as_deref(), Some("Box 3"));
+        assert_eq!(disposition_title("attachment; filename*=UTF-8''Gurdw%C4%81r%C4%81%20list.csv").as_deref(), Some("Gurdwārā list"));
+        assert_eq!(disposition_title("attachment"), None);
+    }
 
     #[test]
     fn sheet_links() {
