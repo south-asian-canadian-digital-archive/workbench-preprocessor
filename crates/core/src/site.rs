@@ -15,11 +15,48 @@ pub const JSONAPI_HELP: &str = "JSON:API is off on this site. Turn it on under E
 /admin/config/services/jsonapi. Docs: \
 https://www.drupal.org/docs/core-modules-and-themes/core-modules/jsonapi-module";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Term {
     pub name: String,
     pub tid: String,
     pub authority_uris: Vec<String>,
+    /// Last changed, seconds since 1970 (0 when the site didn't say).
+    #[serde(default)]
+    pub changed: i64,
+}
+
+/// The site's answer to `term_matches`.
+#[derive(Debug, Default)]
+pub struct TermMatches {
+    /// (vocabulary, value) -> the terms it could be.
+    pub matches: HashMap<(String, String), Vec<Term>>,
+    /// Link -> (vocabulary, term) holding it.
+    pub uris: HashMap<String, Vec<(String, Term)>>,
+}
+
+impl TermMatches {
+    fn from_json(v: &Value) -> Self {
+        let term = |t: &Value| Term {
+            name: t["name"].as_str().unwrap_or_default().to_string(),
+            tid: t["tid"].as_str().map(str::to_string).or_else(|| t["tid"].as_i64().map(|n| n.to_string())).unwrap_or_default(),
+            authority_uris: t["uris"].as_array().into_iter().flatten().filter_map(|u| u.as_str().map(str::to_string)).collect(),
+            changed: 0,
+        };
+        let mut out = Self::default();
+        for m in v["matches"].as_array().into_iter().flatten() {
+            let key = (m["vid"].as_str().unwrap_or_default().to_string(), m["value"].as_str().unwrap_or_default().to_string());
+            out.matches.insert(key, m["terms"].as_array().into_iter().flatten().map(term).collect());
+        }
+        if let Some(o) = v["uris"].as_object() {
+            for (uri, list) in o {
+                out.uris.insert(
+                    uri.clone(),
+                    list.as_array().into_iter().flatten().map(|t| (t["vid"].as_str().unwrap_or_default().to_string(), term(t))).collect(),
+                );
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +122,9 @@ impl Site {
                 }
                 Ok(r) => return Ok(r),
                 Err(e) if attempt == 7 => return Err(e).with_context(|| format!("GET {url}")),
+                // Can't connect at all (no such host, refused): one more try,
+                // then give up - waiting out the backoff doesn't bring a site back.
+                Err(e) if e.is_connect() && attempt >= 1 => return Err(e).with_context(|| format!("GET {url}")),
                 Err(_) => {}
             }
             if !crate::progress::sleep(delay) {
@@ -245,34 +285,113 @@ impl Site {
 
     /// Every term in a vocabulary, following JSON:API pagination.
     pub fn vocabulary(&self, vid: &str) -> Result<Vec<Term>> {
-        let mut out = Vec::new();
-        let mut url = Some(format!(
-            "{}/jsonapi/taxonomy_term/{vid}?page%5Blimit%5D=50&sort=drupal_internal__tid",
+        self.vocabulary_since(vid, None)
+    }
+
+    /// A vocabulary's terms changed at or after `since` (every term with
+    /// None). Only the fields organise reads, 50 a page (JSON:API's most), six
+    /// pages at a time: the pages are known by their offset.
+    pub fn vocabulary_since(&self, vid: &str, since: Option<i64>) -> Result<Vec<Term>> {
+        const PAGE: usize = 50;
+        const AT_ONCE: usize = 6;
+        let filter = since
+            .map(|t| format!("&filter%5Bc%5D%5Bcondition%5D%5Bpath%5D=changed&filter%5Bc%5D%5Bcondition%5D%5Boperator%5D=%3E%3D&filter%5Bc%5D%5Bcondition%5D%5Bvalue%5D={t}"))
+            .unwrap_or_default();
+        let base = format!(
+            "{}/jsonapi/taxonomy_term/{vid}?page%5Blimit%5D={PAGE}&sort=drupal_internal__tid\
+             &fields%5Btaxonomy_term--{vid}%5D=name,drupal_internal__tid,changed,field_authority_link,field_external_uri{filter}",
             self.host()
-        ));
-        while let Some(u) = url.take() {
-            let r = self.get(&u)?;
-            if r.status() == StatusCode::NOT_FOUND {
-                // An unknown vocabulary 404s; so does a site without JSON:API.
-                bail!("vocabulary '{vid}' isn't on {} (or JSON:API is off)", self.host());
+        );
+        let job = crate::progress::current();
+        let mut out = Vec::new();
+        let mut offset = 0;
+        loop {
+            // One page first: most vocabularies fit in it.
+            let at_once = if offset == 0 { 1 } else { AT_ONCE };
+            let pages: Vec<Result<Vec<Term>>> = std::thread::scope(|sc| {
+                let handles: Vec<_> = (0..at_once)
+                    .map(|k| {
+                        let url = format!("{base}&page%5Boffset%5D={}", offset + k * PAGE);
+                        let job = job.clone();
+                        sc.spawn(move || {
+                            let _job = job.map(crate::progress::enter);
+                            self.term_page(&url, vid)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow!("a page fetch panicked")))).collect()
+            });
+            let mut last = false;
+            for p in pages {
+                let p = p?;
+                last |= p.len() < PAGE;
+                out.extend(p);
             }
-            if !r.status().is_success() {
-                bail!("{} answered {} listing '{vid}'", self.host(), r.status());
+            if last {
+                return Ok(out);
             }
-            let doc: Value = r.json()?;
-            for item in doc["data"].as_array().into_iter().flatten() {
+            offset += at_once * PAGE;
+        }
+    }
+
+    /// Ask the site which existing terms each value could be (the
+    /// sacda_organise module's /api/organise/term-matches): one request for
+    /// many values, nothing downloaded. None when the site doesn't have the
+    /// module yet.
+    pub fn term_matches(&self, values: &[(String, String)], uris: &[String]) -> Result<Option<TermMatches>> {
+        let (user, pass) = self.auth.as_ref().context("no credentials for this site")?;
+        let url = format!("{}/api/organise/term-matches", self.host());
+        let body = serde_json::json!({
+            "values": values.iter().map(|(vid, value)| serde_json::json!({"vid": vid, "value": value})).collect::<Vec<_>>(),
+            "uris": uris,
+        });
+        let mut delay = Duration::from_millis(500);
+        for attempt in 0..6 {
+            if crate::progress::cancelled_here() {
+                bail!("cancelled");
+            }
+            match self.client.post(&url).basic_auth(user, Some(pass)).json(&body).send() {
+                Ok(r) if r.status() == StatusCode::NOT_FOUND || r.status() == StatusCode::METHOD_NOT_ALLOWED => return Ok(None),
+                Ok(r) if r.status().is_success() => {
+                    let v: Value = r.json().with_context(|| format!("{url} didn't return JSON"))?;
+                    return Ok(Some(TermMatches::from_json(&v)));
+                }
+                Ok(r) if r.status() != StatusCode::TOO_MANY_REQUESTS && !r.status().is_server_error() => {
+                    bail!("{} answered {} for {url}", self.host(), r.status())
+                }
+                Ok(r) if attempt == 5 => bail!("{} answered {} for {url}", self.host(), r.status()),
+                Err(e) if attempt == 5 || (e.is_connect() && attempt >= 1) => return Err(e).with_context(|| format!("POST {url}")),
+                _ => {}
+            }
+            if !crate::progress::sleep(delay) {
+                bail!("cancelled");
+            }
+            delay = (delay * 2).min(Duration::from_secs(8));
+        }
+        unreachable!()
+    }
+
+    /// One page of a vocabulary.
+    fn term_page(&self, url: &str, vid: &str) -> Result<Vec<Term>> {
+        let r = self.get(url)?;
+        if r.status() == StatusCode::NOT_FOUND {
+            // An unknown vocabulary 404s; so does a site without JSON:API.
+            bail!("vocabulary '{vid}' isn't on {} (or JSON:API is off)", self.host());
+        }
+        if !r.status().is_success() {
+            bail!("{} answered {} listing '{vid}'", self.host(), r.status());
+        }
+        let doc: Value = r.json()?;
+        Ok(doc["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|item| {
                 let attrs = &item["attributes"];
-                let name = attrs["name"].as_str().unwrap_or_default().to_string();
-                let tid = attrs["drupal_internal__tid"]
-                    .as_i64()
-                    .map(|t| t.to_string())
-                    .unwrap_or_default();
                 let mut uris = Vec::new();
                 for key in ["field_authority_link", "field_external_uri"] {
                     match &attrs[key] {
-                        Value::Array(a) => uris.extend(
-                            a.iter().filter_map(|l| l["uri"].as_str().map(String::from)),
-                        ),
+                        Value::Array(a) => uris.extend(a.iter().filter_map(|l| l["uri"].as_str().map(String::from))),
                         Value::Object(o) => {
                             if let Some(u) = o.get("uri").and_then(Value::as_str) {
                                 uris.push(u.to_string())
@@ -281,15 +400,14 @@ impl Site {
                         _ => {}
                     }
                 }
-                out.push(Term {
-                    name,
-                    tid,
+                Term {
+                    name: attrs["name"].as_str().unwrap_or_default().to_string(),
+                    tid: attrs["drupal_internal__tid"].as_i64().map(|t| t.to_string()).unwrap_or_default(),
                     authority_uris: uris,
-                });
-            }
-            url = self.next_page(&doc);
-        }
-        Ok(out)
+                    changed: attrs["changed"].as_str().and_then(unix_time).unwrap_or(0),
+                }
+            })
+            .collect())
     }
 
     /// Every archival_component and islandora_object whose identifier starts
@@ -370,6 +488,63 @@ impl Site {
     }
 }
 
+/// "2026-11-02T19:45:58+00:00" as seconds since 1970.
+pub fn unix_time(s: &str) -> Option<i64> {
+    let (date, rest) = s.split_once('T')?;
+    let mut d = date.split('-').map(|p| p.parse::<i64>());
+    let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
+    let time = rest.get(..8)?;
+    let mut t = time.split(':').map(|p| p.parse::<i64>());
+    let (hh, mm, ss) = (t.next()?.ok()?, t.next()?.ok()?, t.next()?.ok()?);
+    let tz = &rest[8..];
+    let offset = match tz.chars().next() {
+        Some(sign @ ('+' | '-')) => {
+            let h: i64 = tz.get(1..3)?.parse().ok()?;
+            let m: i64 = tz.get(4..6)?.parse().ok()?;
+            (h * 3600 + m * 60) * if sign == '-' { -1 } else { 1 }
+        }
+        _ => 0,
+    };
+    // Days from 1970-01-01 (Howard Hinnant's days_from_civil).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + hh * 3600 + mm * 60 + ss - offset)
+}
+
 pub fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+#[cfg(test)]
+mod match_tests {
+    use super::*;
+
+    #[test]
+    fn reads_term_matches() {
+        let v = serde_json::json!({
+            "version": 1,
+            "matches": [
+                {"vid": "subject", "value": "Anniversarys", "terms": [{"tid": "1414", "name": "Anniversaries", "uris": ["http://id.loc.gov/x"]}]},
+                {"vid": "subject", "value": "Nothing", "terms": []}
+            ],
+            "uris": {"http://id.loc.gov/y": [{"vid": "subject", "tid": 12, "name": "Y", "uris": []}]}
+        });
+        let m = TermMatches::from_json(&v);
+        let t = &m.matches[&("subject".to_string(), "Anniversarys".to_string())];
+        assert_eq!((t[0].tid.as_str(), t[0].name.as_str()), ("1414", "Anniversaries"));
+        assert_eq!(t[0].authority_uris, vec!["http://id.loc.gov/x"]);
+        assert!(m.matches[&("subject".to_string(), "Nothing".to_string())].is_empty());
+        assert_eq!(m.uris["http://id.loc.gov/y"][0].1.tid, "12");
+    }
+
+    #[test]
+    fn reads_drupal_times() {
+        assert_eq!(unix_time("1970-01-01T00:00:00+00:00"), Some(0));
+        assert_eq!(unix_time("2026-11-02T19:45:58+00:00"), Some(1793648758));
+        assert_eq!(unix_time("2026-11-02T11:45:58-08:00"), Some(1793648758));
+    }
 }

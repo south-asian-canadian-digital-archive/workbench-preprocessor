@@ -242,6 +242,12 @@ pub struct Session {
     term_fields: HashMap<String, Result<Vec<String>, String>>,
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
+    /// Whether the site answers term matches itself (None: not asked yet;
+    /// false: it has no sacda_organise module - vocabularies are downloaded).
+    match_api: Option<bool>,
+    /// The site's candidates per (vocabulary, value), and terms per link.
+    candidates: HashMap<(String, String), Vec<Term>>,
+    linked: HashMap<String, Vec<(String, Term)>>,
     /// Media IDs per node already on the site (None: the lookup failed).
     media: HashMap<String, Option<Vec<String>>>,
     /// Nodes already on the site as the REST API gives them (for update backups).
@@ -298,6 +304,9 @@ impl Session {
             lang: None,
             nodes: HashMap::new(),
             media: HashMap::new(),
+            match_api: None,
+            candidates: HashMap::new(),
+            linked: HashMap::new(),
             node_json: HashMap::new(),
             prefetched: Default::default(),
             node_errors: Default::default(),
@@ -308,6 +317,86 @@ impl Session {
             authorities: if private_cache { Cache::in_memory() } else { Cache::open() },
             site_findings: None,
         })
+    }
+
+    /// Ask the site about these values (and links) at once, in chunks. A site
+    /// without the endpoint (or failing it) switches this session to
+    /// downloading vocabularies, as before.
+    pub fn prefetch_matches(&mut self, values: Vec<(String, String)>, uris: Vec<String>) {
+        if self.match_api == Some(false) || self.site.is_none() {
+            return;
+        }
+        // For comparing the two ways (and a site whose endpoint misbehaves).
+        if std::env::var_os("ORGANISE_DOWNLOAD_VOCABULARIES").is_some() {
+            self.match_api = Some(false);
+            return;
+        }
+        let values: Vec<(String, String)> = {
+            let mut seen = std::collections::HashSet::new();
+            values.into_iter().filter(|k| !self.candidates.contains_key(k) && seen.insert(k.clone())).collect()
+        };
+        let uris: Vec<String> = uris.into_iter().filter(|u| !self.linked.contains_key(u)).collect();
+        if values.is_empty() && uris.is_empty() {
+            return;
+        }
+        let t0 = std::time::Instant::now();
+        let total = values.len() + uris.len();
+        self.job.say(format!("matching {total} value(s) against the site's vocabularies"));
+        let chunks: Vec<Vec<(String, String)>> = if values.is_empty() { vec![vec![]] } else { values.chunks(2000).map(<[_]>::to_vec).collect() };
+        for (i, chunk) in chunks.iter().enumerate() {
+            let u: &[String] = if i == 0 { &uris } else { &[] };
+            let got = self.site.as_ref().map(|s| s.term_matches(chunk, u));
+            match got {
+                Some(Ok(Some(m))) => {
+                    self.match_api = Some(true);
+                    self.candidates.extend(m.matches);
+                    // A value the answer left out had no candidates.
+                    for k in chunk {
+                        self.candidates.entry(k.clone()).or_default();
+                    }
+                    self.linked.extend(m.uris);
+                    for uri in u {
+                        self.linked.entry(uri.clone()).or_default();
+                    }
+                }
+                Some(Ok(None)) | Some(Err(_)) | None => {
+                    // No endpoint (or it failed): vocabularies are downloaded instead.
+                    self.match_api = Some(false);
+                    if self.progress {
+                        eprintln!("  the site can't match terms itself (no sacda_organise module) - downloading vocabularies instead");
+                    }
+                    return;
+                }
+            }
+        }
+        if self.progress {
+            eprintln!("  matched {total} value(s) on the site ({:.1}s)", t0.elapsed().as_secs_f32());
+        }
+    }
+
+    /// The terms of `vid` that `value` could be: the site's short list when
+    /// it can match, else the whole vocabulary.
+    pub fn terms_for(&mut self, vid: &str, value: &str) -> Result<Vec<Term>, String> {
+        let key = (vid.to_string(), value.to_string());
+        if self.match_api != Some(false) && self.site.is_some() && !self.candidates.contains_key(&key) {
+            // Not asked yet (a heading from id.loc.gov replaced the sheet's value).
+            self.prefetch_matches(vec![key.clone()], vec![]);
+        }
+        match self.candidates.get(&key) {
+            Some(t) if self.match_api == Some(true) => Ok(t.clone()),
+            _ => self.vocabulary(vid).map(<[Term]>::to_vec),
+        }
+    }
+
+    /// The name of the term in `vid` holding this authority link, if any.
+    pub fn term_with_uri(&mut self, vid: &str, uri: &str, same: impl Fn(&str, &str) -> bool) -> Option<String> {
+        if self.match_api != Some(false) && self.site.is_some() && !self.linked.contains_key(uri) {
+            self.prefetch_matches(vec![], vec![uri.to_string()]);
+        }
+        if self.match_api == Some(true) {
+            return self.linked.get(uri)?.iter().find(|(v, _)| v == vid).map(|(_, t)| t.name.clone());
+        }
+        self.vocabulary(vid).ok()?.iter().find(|t| t.authority_uris.iter().any(|u| same(u, uri))).map(|t| t.name.clone())
     }
 
     pub fn vocabulary(&mut self, vid: &str) -> Result<&[Term], String> {
@@ -492,6 +581,10 @@ impl Session {
         let _job = super::progress::enter(self.job.clone());
         // Fetches that failed (or were cancelled) last time are asked again.
         self.vocabs.retain(|_, v| v.is_ok());
+        // A site that didn't answer last time is asked again.
+        if self.match_api == Some(false) {
+            self.match_api = None;
+        }
         self.term_fields.retain(|_, v| v.is_ok());
         if matches!(self.lang, Some(Err(_))) {
             self.lang = None;

@@ -128,6 +128,45 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
         row_bundle[r] = None; // metadata comes from the item's first row
     }
 
+    // Every value the loop below will look up, asked of the site in one go.
+    let mut asked: Vec<(String, String)> = Vec::new();
+    let mut uris: Vec<String> = Vec::new();
+    for col in &table.headers {
+        for (i, row) in table.rows.iter().enumerate() {
+            let Some(bundle) = row_bundle[i] else { continue };
+            if update_only[i] && !s.opts.update_columns.contains(col) {
+                continue;
+            }
+            let Some(def) = s.cfg.schema.fields(bundle).get(col).cloned() else { continue };
+            if !def.is_taxonomy() || col == "field_model" || col == "field_archival_level" || col == "field_language" {
+                continue;
+            }
+            let auth = s.cfg.sacda.fields.get(col).and_then(|r| r.authority.as_deref()).and_then(authority::by_name);
+            for (idx, raw) in table.get(row, col).split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()).enumerate() {
+                let p = parse_value(raw, &def);
+                if p.name.is_empty() {
+                    continue;
+                }
+                let mut names = vec![p.name.clone()];
+                // An authority ID: the check uses its heading, or the sheet's beside it.
+                if let Some(a) = auth.as_deref().filter(|a| a.is_identifier(&p.name)) {
+                    if let Ok(Some(res)) = s.authorities.resolve(a, &p.name) {
+                        names.push(res.label.clone());
+                        uris.push(res.uri.clone());
+                    }
+                    if let Some(h) = table.headings.get(&(row.line, col.clone())).and_then(|hs| hs.get(idx)) {
+                        names.push(h.clone());
+                    }
+                }
+                let targets = p.vocab.clone().map(|v| vec![v]).unwrap_or_else(|| def.targets.clone());
+                for v in targets {
+                    asked.extend(names.iter().map(|n| (v.clone(), n.clone())));
+                }
+            }
+        }
+    }
+    s.prefetch_matches(asked, uris);
+
     let mut new_terms: BTreeMap<String, Vec<NewTerm>> = BTreeMap::new();
 
     for col in table.headers.clone() {
@@ -162,7 +201,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
             let mut rewritten: Vec<String> = Vec::new();
             let mut changed = false;
 
-            for raw in cell.split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+            for (idx, raw) in cell.split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()).enumerate() {
                 let mut p = parse_value(raw, &def);
                 let relator = p.relator.clone().or_else(|| rule.relator.clone());
 
@@ -187,7 +226,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     let targets = p.vocab.clone().map(|v| vec![v]).unwrap_or_else(|| def.targets.clone());
                     let known = targets
                         .iter()
-                        .any(|v| s.vocabulary(v).is_ok_and(|terms| terms.iter().any(|t| t.tid == p.name)));
+                        .any(|v| s.terms_for(v, &p.name).is_ok_and(|terms| terms.iter().any(|t| t.tid == p.name)));
                     if known {
                         vals.push(Val::Tid(p.name.clone()));
                         rewritten.push(raw.to_string());
@@ -202,37 +241,44 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     if a.is_identifier(&p.name) {
                         match s.authorities.resolve(a, &p.name) {
                             Ok(Some(res)) => {
-                                let typed = table.headings.get(&(row.line, col.clone()));
-                                let agrees = typed.is_none_or(|hs| hs.iter().any(|h| suggest::headings_agree(h, &res.label)));
-                                let h = typed.map(|hs| hs.join("; ")).unwrap_or_default();
+                                // The ID and the heading typed beside it (same position) should
+                                // name the same thing. When they don't, the sheet's heading wins:
+                                // a mistyped ID lands on another real heading.
+                                let typed = table.headings.get(&(row.line, col.clone())).and_then(|hs| hs.get(idx));
                                 match typed {
-                                    Some(_) if !agrees => s.stick(
-                                        Finding::new(
-                                            Warning,
-                                            "terms",
-                                            format!(
-                                                "{col}: {} is \"{}\" at {}, but none of the sheet's headings match it (\"{h}\") - check the ID (a typo can land on another real heading)",
-                                                p.name,
-                                                res.label,
-                                                a.name().to_uppercase()
-                                            ),
-                                        )
-                                        .at(row.line, id.clone())
-                                        .with_link(res.uri.clone()),
-                                    ),
-                                    _ => report.findings.push(
-                                        Finding::new(
-                                            Info,
-                                            "terms",
-                                            format!("{col}: {} is {} \"{}\"", p.name, a.name().to_uppercase(), res.label),
-                                        )
-                                        .at(row.line, id.clone())
-                                        .with_link(res.uri.clone()),
-                                    ),
+                                    Some(h) if !suggest::headings_agree(h, &res.label) => {
+                                        s.stick(
+                                            Finding::new(
+                                                Warning,
+                                                "terms",
+                                                format!(
+                                                    "{col}: {} is \"{}\" at {}, but the sheet's heading beside it is \"{h}\" - used the sheet's heading; correct or remove the ID",
+                                                    p.name,
+                                                    res.label,
+                                                    a.name().to_uppercase()
+                                                ),
+                                            )
+                                            .at(row.line, id.clone())
+                                            .with_link(res.uri.clone()),
+                                        );
+                                        p.name = h.clone();
+                                        changed = true;
+                                    }
+                                    _ => {
+                                        report.findings.push(
+                                            Finding::new(
+                                                Info,
+                                                "terms",
+                                                format!("{col}: {} is {} \"{}\"", p.name, a.name().to_uppercase(), res.label),
+                                            )
+                                            .at(row.line, id.clone())
+                                            .with_link(res.uri.clone()),
+                                        );
+                                        p.name = res.label.clone();
+                                        link = Some(res);
+                                        changed = true;
+                                    }
                                 }
-                                p.name = res.label.clone();
-                                link = Some(res);
-                                changed = true;
                             }
                             Ok(None) => {
                                 report.findings.push(
@@ -263,11 +309,11 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     None => def.targets.clone(),
                 };
                 let mut found: Option<(String, String)> = None;
-                let mut near: Option<(String, String)> = None;
+                let mut near: Option<(String, String, String)> = None;
                 for vid in &targets {
                     let memo_key = (vid.clone(), p.name.clone());
                     let memo = s.term_memo.get(&memo_key).cloned();
-                    let terms = match s.vocabulary(vid) {
+                    let terms = match s.terms_for(vid, &p.name) {
                         Ok(t) => t,
                         Err(e) => {
                             report.findings.push(Finding::new(Error, "terms", format!("can't read vocabulary {vid}: {e}")));
@@ -285,10 +331,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                             (hit, close)
                         }
                     };
-                    let by_uri = link
-                        .as_ref()
-                        .and_then(|l| terms.iter().find(|t| t.authority_uris.iter().any(|u| same_uri(u, &l.uri))))
-                        .map(|t| t.name.clone());
+                    let by_uri = link.as_ref().and_then(|l| s.term_with_uri(vid, &l.uri, same_uri));
                     s.term_memo.insert(memo_key, (hit.clone(), close.clone()));
                     if let Some(name) = hit.or(by_uri) {
                         found = Some((vid.clone(), name));
@@ -296,7 +339,8 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     }
                     if near.is_none() {
                         if let Some(n) = close {
-                            near = Some((vid.clone(), n));
+                            let tid = terms.iter().find(|t| t.name == n).map(|t| t.tid.clone()).unwrap_or_default();
+                            near = Some((vid.clone(), n, tid));
                         }
                     }
                 }
@@ -363,14 +407,10 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     }
                 }
 
-                if let Some((near_vocab, near_name)) = near.as_ref().filter(|_| link.is_none()) {
+                if let Some((near_vocab, near_name, tid)) = near.as_ref().filter(|_| link.is_none()) {
+                    let tid = tid.clone();
                     let fixed_cell = replace_value(&cell, raw, &render_name(&p, near_name), &subdelim);
                     let why = suggest::why(&p.name, near_name);
-                    let tid = s
-                        .vocabulary(near_vocab)
-                        .ok()
-                        .and_then(|t| t.iter().find(|t| t.name == *near_name).map(|t| t.tid.clone()))
-                        .unwrap_or_default();
                     let mut f = Finding::new(
                         if creatable { Warning } else { Error },
                         "terms",

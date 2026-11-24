@@ -50,6 +50,11 @@ pub fn enter(job: Arc<Progress>) -> impl Drop {
     Guard(CURRENT.with(|c| c.borrow_mut().replace(job)))
 }
 
+/// The job this thread works for, to hand to helper threads it starts.
+pub fn current() -> Option<Arc<Progress>> {
+    CURRENT.with(|c| c.borrow().clone())
+}
+
 /// Is this thread working for a job (a screen that can stop it)?
 pub fn has_job() -> bool {
     CURRENT.with(|c| c.borrow().is_some())
