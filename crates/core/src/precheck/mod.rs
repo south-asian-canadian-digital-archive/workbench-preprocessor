@@ -243,7 +243,7 @@ pub struct Session {
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
     /// Whether the site answers term matches itself (None: not asked yet;
-    /// false: it has no sacda_organise module - vocabularies are downloaded).
+    /// false: it has no term-matches endpoint - vocabularies are downloaded).
     match_api: Option<bool>,
     /// The site's candidates per (vocabulary, value), and terms per link.
     candidates: HashMap<(String, String), Vec<Term>>,
@@ -363,7 +363,7 @@ impl Session {
                     // No endpoint, or it failed: vocabularies are downloaded instead.
                     let why = match other {
                         Some(Err(e)) => format!("the site's term matcher failed ({e:#})"),
-                        _ => "the site can't match terms itself (no sacda_organise module yet)".to_string(),
+                        _ => "the site can't match terms itself (no term-matches endpoint in its sacda_modules yet)".to_string(),
                     };
                     self.match_api = Some(false);
                     self.job.say(format!("{why} - downloading vocabularies instead"));

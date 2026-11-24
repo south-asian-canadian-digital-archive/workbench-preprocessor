@@ -335,7 +335,7 @@ impl Site {
     }
 
     /// Ask the site which existing terms each value could be (the
-    /// sacda_organise module's /api/organise/term-matches): one request for
+    /// /api/organise/term-matches (sacda_modules)): one request for
     /// many values, nothing downloaded. None when the site doesn't have the
     /// module yet.
     pub fn term_matches(&self, values: &[(String, String)], uris: &[String]) -> Result<Option<TermMatches>> {
