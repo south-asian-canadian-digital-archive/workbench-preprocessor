@@ -147,7 +147,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 if p.name.is_empty() {
                     continue;
                 }
-                let mut names = vec![p.name.clone()];
+                let mut names = Vec::new();
                 // An authority ID: the check uses its heading, or the sheet's beside it.
                 if let Some(a) = auth.as_deref().filter(|a| a.is_identifier(&p.name)) {
                     if let Ok(Some(res)) = s.authorities.resolve(a, &p.name) {
@@ -155,8 +155,14 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                         uris.push(res.uri.clone());
                     }
                     if let Some(h) = table.headings.get(&(row.line, col.clone())).and_then(|hs| hs.get(idx)) {
-                        names.push(h.clone());
+                        names.push(parse_value(h, &def).name);
                     }
+                } else {
+                    names.push(p.name.clone());
+                }
+                // A number may be a term ID: it's asked as it is.
+                if names.is_empty() {
+                    names.push(p.name.clone());
                 }
                 let targets = p.vocab.clone().map(|v| vec![v]).unwrap_or_else(|| def.targets.clone());
                 for v in targets {
@@ -261,7 +267,8 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                                             .at(row.line, id.clone())
                                             .with_link(res.uri.clone()),
                                         );
-                                        p.name = h.clone();
+                                        // The heading as a name (a typed vocabulary or relator prefix aside).
+                                        p.name = parse_value(h, &def).name;
                                         changed = true;
                                     }
                                     _ => {

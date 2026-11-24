@@ -360,7 +360,8 @@ impl Site {
                     bail!("{} answered {} for {url}", self.host(), r.status())
                 }
                 Ok(r) if attempt == 5 => bail!("{} answered {} for {url}", self.host(), r.status()),
-                Err(e) if attempt == 5 || (e.is_connect() && attempt >= 1) => return Err(e).with_context(|| format!("POST {url}")),
+                // A timed-out match may still be running on the site: don't send it again.
+                Err(e) if attempt == 5 || e.is_timeout() || (e.is_connect() && attempt >= 1) => return Err(e).with_context(|| format!("POST {url}")),
                 _ => {}
             }
             if !crate::progress::sleep(delay) {

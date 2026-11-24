@@ -359,11 +359,16 @@ impl Session {
                         self.linked.entry(uri.clone()).or_default();
                     }
                 }
-                Some(Ok(None)) | Some(Err(_)) | None => {
-                    // No endpoint (or it failed): vocabularies are downloaded instead.
+                other => {
+                    // No endpoint, or it failed: vocabularies are downloaded instead.
+                    let why = match other {
+                        Some(Err(e)) => format!("the site's term matcher failed ({e:#})"),
+                        _ => "the site can't match terms itself (no sacda_organise module yet)".to_string(),
+                    };
                     self.match_api = Some(false);
+                    self.job.say(format!("{why} - downloading vocabularies instead"));
                     if self.progress {
-                        eprintln!("  the site can't match terms itself (no sacda_organise module) - downloading vocabularies instead");
+                        eprintln!("  {why} - downloading vocabularies instead");
                     }
                     return;
                 }
