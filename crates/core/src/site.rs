@@ -356,6 +356,12 @@ impl Site {
                     let v: Value = r.json().with_context(|| format!("{url} didn't return JSON"))?;
                     return Ok(Some(TermMatches::from_json(&v)));
                 }
+                // The module's own refusal (bad request, too big, intl missing): say it, don't retry.
+                Ok(r) if r.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|c| c.contains("json")) && !r.status().is_success() && r.status() != StatusCode::TOO_MANY_REQUESTS => {
+                    let status = r.status();
+                    let msg = r.json::<Value>().ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_default();
+                    bail!("{} answered {status} for {url}{}", self.host(), if msg.is_empty() { String::new() } else { format!(": {msg}") })
+                }
                 Ok(r) if r.status() != StatusCode::TOO_MANY_REQUESTS && !r.status().is_server_error() => {
                     bail!("{} answered {} for {url}", self.host(), r.status())
                 }
