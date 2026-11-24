@@ -564,9 +564,10 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
     report.new_terms = new_terms;
 }
 
-/// For each written heading of a cell, the ID of its row that names it (and
-/// whether exactly: same letters or the same words). One ID per heading and
-/// one heading per ID; exact matches are paired first, close ones after.
+/// For each written heading of a cell, the ID of its row that names it
+/// exactly (same letters, or the same words in another order). One ID per
+/// heading and one heading per ID. A close-but-different heading never takes
+/// an ID: "Cars" is not "Cats".
 fn assign_ids(s: &mut Session, authority: Option<&str>, ids: &[String], cell: &str, subdelim: &str, def: &crate::config::FieldDef) -> Vec<Option<(usize, bool)>> {
     let headings: Vec<String> = cell.split(subdelim).map(str::trim).filter(|v| !v.is_empty()).map(|v| parse_value(v, def).name).collect();
     let mut out = vec![None; headings.len()];
@@ -579,18 +580,14 @@ fn assign_ids(s: &mut Session, authority: Option<&str>, ids: &[String], cell: &s
         .map(|id| if a.is_identifier(id) { s.authorities.resolve(a.as_ref(), id).ok().flatten().map(|r| r.label) } else { None })
         .collect();
     let mut taken = vec![false; ids.len()];
-    for exact in [true, false] {
-        for (i, h) in headings.iter().enumerate() {
-            if out[i].is_some() || a.is_identifier(h) {
-                continue;
-            }
-            let hit = labels.iter().enumerate().find(|(j, l)| {
-                !taken[*j] && l.as_deref().is_some_and(|l| if exact { suggest::same_heading(h, l) } else { suggest::headings_agree(h, l) })
-            });
-            if let Some((j, _)) = hit {
-                taken[j] = true;
-                out[i] = Some((j, exact));
-            }
+    for (i, h) in headings.iter().enumerate() {
+        if a.is_identifier(h) {
+            continue;
+        }
+        let hit = labels.iter().enumerate().find(|(j, l)| !taken[*j] && l.as_deref().is_some_and(|l| suggest::same_heading(h, l)));
+        if let Some((j, _)) = hit {
+            taken[j] = true;
+            out[i] = Some((j, true));
         }
     }
     out
