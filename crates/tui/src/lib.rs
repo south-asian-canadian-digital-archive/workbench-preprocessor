@@ -22,6 +22,8 @@ use ratatui::Terminal;
 pub mod ingest;
 pub use ingest::ingest;
 mod clipboard;
+mod pathbox;
+mod picker;
 
 use sacda::bundle;
 use sacda::config::Config;
@@ -255,6 +257,10 @@ pub struct App {
     /// File counts per access folder, for the pick screen (None while counting -
     /// on a network share that takes a while, so it's never done on this thread).
     pub folder_counts: RefCell<HashMap<PathBuf, Option<Option<usize>>>>,
+    /// After Tab in the folder box: the folders that matched (empty: none did).
+    pub folder_hint: Option<Vec<String>>,
+    /// The system folder window, while it's open.
+    pub picker_rx: Option<mpsc::Receiver<Result<Option<PathBuf>, String>>>,
 }
 
 /// One line of the pick list.
@@ -425,6 +431,8 @@ impl App {
             pick_offset: Cell::new(0),
             count_tx,
             count_rx,
+            folder_hint: None,
+            picker_rx: None,
             pending_input: start.input.clone(),
             start,
         }
@@ -971,9 +979,10 @@ fn event_loop(app: &mut App, term: &mut Term) -> Result<Option<Outcome>> {
             app.start_recheck(true);
         }
         app.poll_counts();
+        app.poll_picker();
         term.draw(|f| view::draw(f, app))?;
         // Tick while something runs so the spinner, progress and counts move.
-        let ticking = app.job.is_some() || app.counting();
+        let ticking = app.job.is_some() || app.counting() || app.picker_rx.is_some();
         if !event::poll(Duration::from_millis(if ticking { 120 } else { 1000 }))? {
             continue;
         }
@@ -1039,8 +1048,8 @@ fn mouse(app: &mut App, m: MouseEvent) -> Option<KeyEvent> {
         .find(|(r, _)| m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height)
         .copied();
     let (rect, hit) = hit?;
-    // While a text box is open, only its own buttons (Enter/Esc) respond.
-    if !matches!(app.input, Input::None) && !matches!(hit, Hit::Key(KeyCode::Enter | KeyCode::Esc)) {
+    // While a text box is open, only its own buttons (Enter/Esc, the folder box's Tab/Browse) respond.
+    if !matches!(app.input, Input::None) && !matches!(hit, Hit::Key(KeyCode::Enter | KeyCode::Esc | KeyCode::Tab | KeyCode::F(2))) {
         return None;
     }
     let row = (m.row - rect.y) as usize;
@@ -1105,6 +1114,96 @@ fn mouse(app: &mut App, m: MouseEvent) -> Option<KeyEvent> {
     }
 }
 
+/// Use `raw` as the files folder of the open (or selected) sheet. Something
+/// that isn't a folder keeps the box open with it, to correct.
+fn apply_folder(app: &mut App, raw: String) {
+    // On the review screen it's the open sheet, and it's re-read with the new folder.
+    let reviewing = match &app.screen {
+        Screen::Review(r) => Some(r.input_name.clone()),
+        _ => None,
+    };
+    let Some(sel) = reviewing.clone().or_else(|| app.selected_input()) else { return };
+    if raw.trim().is_empty() {
+        app.sheets.entry(&sel).folder = None;
+        app.sheets.save();
+        app.status = "Files folder: back to the default".into();
+    } else {
+        let p = clean_path(&raw);
+        if p.is_dir() {
+            let p = dunce::canonicalize(&p).unwrap_or(p);
+            app.status = format!("Files folder for this sheet: {}", p.display());
+            app.sheets.entry(&sel).folder = Some(p);
+            app.sheets.save();
+        } else {
+            app.status = format!("{} isn't a folder", p.display());
+            app.input = Input::Folder(raw);
+            return;
+        }
+    }
+    // Count it again: it may have been made (or filled) since it was last counted.
+    let after = app.access_for(Some(&sel)).0;
+    app.folder_counts.borrow_mut().remove(&after);
+    if reviewing.is_some() {
+        if app.job.is_some() {
+            app.reload_after_job = true;
+            app.status = format!("{} - used when this check finishes", app.status);
+        } else {
+            app.start_recheck(true);
+        }
+    }
+}
+
+/// Open the system's folder window on its own thread; `poll_picker` takes the answer.
+fn start_picker(app: &mut App) {
+    if app.picker_rx.is_some() {
+        return;
+    }
+    let typed = match &app.input {
+        Input::Folder(b) => b.clone(),
+        _ => String::new(),
+    };
+    let here = std::env::current_dir().unwrap_or_default();
+    // Start where the box points, else at the sheet's current files folder (or its parent).
+    let start = Some(pathbox::resolve(&typed, &here)).filter(|p| !typed.trim().is_empty() && p.is_dir()).or_else(|| {
+        let sel = match &app.screen {
+            Screen::Review(r) => Some(r.input_name.clone()),
+            _ => app.selected_input(),
+        };
+        let dir = app.access_for(sel.as_deref()).0;
+        if dir.is_dir() { Some(dir) } else { dir.parent().map(Path::to_path_buf) }
+    });
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(picker::pick_folder(start.as_deref()));
+    });
+    app.picker_rx = Some(rx);
+    app.status = "A folder window is open - choose the folder there (it can open behind this window)".into();
+}
+
+impl App {
+    /// The folder window's answer, once it's closed.
+    fn poll_picker(&mut self) {
+        let Some(rx) = &self.picker_rx else { return };
+        let answer = match rx.try_recv() {
+            Ok(a) => a,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => Err("the folder window stopped".into()),
+        };
+        self.picker_rx = None;
+        match answer {
+            // Choosing a folder is the answer: use it straight away, like Enter.
+            Ok(Some(p)) if matches!(self.input, Input::Folder(_)) => {
+                self.input = Input::None;
+                self.folder_hint = None;
+                apply_folder(self, p.to_string_lossy().to_string());
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => self.status = "No folder chosen".into(),
+            Err(e) => self.status = e,
+        }
+    }
+}
+
 enum Flow {
     Continue,
     Quit,
@@ -1112,6 +1211,21 @@ enum Flow {
 }
 
 fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
+    if let Input::Folder(buf) = &app.input {
+        let browse = key.code == KeyCode::F(2) || (key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL));
+        if key.code == KeyCode::Tab {
+            let c = pathbox::complete(buf, &std::env::current_dir().unwrap_or_default());
+            // One match completes; several are listed; none says so.
+            app.folder_hint = if c.text != *buf && c.matches.is_empty() { None } else { Some(c.matches) };
+            app.input = Input::Folder(c.text);
+            return Ok(Flow::Continue);
+        }
+        if browse {
+            start_picker(app);
+            return Ok(Flow::Continue);
+        }
+        app.folder_hint = None;
+    }
     // Text input takes every key until Enter/Esc.
     match &mut app.input {
         Input::None => {}
@@ -1156,41 +1270,7 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                                 app.start_pull(url);
                             }
                         }
-                        Input::Folder(raw) => {
-                            // On the review screen it's the open sheet, and it's re-read with the new folder.
-                            let reviewing = match &app.screen {
-                                Screen::Review(r) => Some(r.input_name.clone()),
-                                _ => None,
-                            };
-                            let Some(sel) = reviewing.clone().or_else(|| app.selected_input()) else { return Ok(Flow::Continue) };
-                            if raw.trim().is_empty() {
-                                app.sheets.entry(&sel).folder = None;
-                                app.sheets.save();
-                                app.status = "Files folder: back to the default".into();
-                            } else {
-                                let p = clean_path(&raw);
-                                if p.is_dir() {
-                                    let p = dunce::canonicalize(&p).unwrap_or(p);
-                                    app.status = format!("Files folder for this sheet: {}", p.display());
-                                    app.sheets.entry(&sel).folder = Some(p);
-                                    app.sheets.save();
-                                } else {
-                                    app.status = format!("{} isn't a folder", p.display());
-                                    app.input = Input::Folder(raw);
-                                    return Ok(Flow::Continue);
-                                }
-                            }
-                            // Count it again: it may have been made (or filled) since it was last counted.
-                            let after = app.access_for(Some(&sel)).0;
-                            app.folder_counts.borrow_mut().remove(&after);
-                            if reviewing.is_some() {
-                                if app.job.is_some() {
-                                    app.reload_after_job = true;
-                                    app.status = format!("{} - used when this check finishes", app.status);
-                                } else {
-                                    app.start_recheck(true);
-                                }
-                            }                        }
+                        Input::Folder(raw) => apply_folder(app, raw),
                         Input::Clean => {}
                         Input::Subset(raw) => {
                             // On the review screen it's the open sheet, and it's re-read straight away.

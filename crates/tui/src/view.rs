@@ -182,6 +182,8 @@ fn chip_key(label: &str) -> Option<KeyCode> {
         "Enter" => Some(KeyCode::Enter),
         "Esc" => Some(KeyCode::Esc),
         "Tab" => Some(KeyCode::Tab),
+        // A chip carries no modifiers: F2 opens the folder window like Ctrl+O.
+        "Ctrl+O" => Some(KeyCode::F(2)),
         k if k.chars().count() == 1 => k.chars().next().map(KeyCode::Char),
         _ => None, // arrows: use the wheel or click the rows instead
     }
@@ -250,6 +252,9 @@ fn short(s: &str, n: usize) -> String {
 }
 
 fn footer(app: &App) -> Line<'static> {
+    if matches!(app.input, Input::Folder(_)) {
+        return keys(&[("Enter", "ok"), ("Tab", "complete"), ("Ctrl+O", "browse…"), ("Esc", "cancel")]);
+    }
     if !matches!(app.input, Input::None) {
         return keys(&[("Enter", "ok"), ("Esc", "cancel")]);
     }
@@ -848,6 +853,10 @@ fn clean_popup(f: &mut Frame, area: Rect) {
     );
 }
 
+fn prompt_len(l: &Line) -> usize {
+    l.spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
 fn input_popup(f: &mut Frame, app: &App, area: Rect) {
     let (title, prompt, buf) = match &app.input {
         Input::None => return,
@@ -855,7 +864,7 @@ fn input_popup(f: &mut Frame, app: &App, area: Rect) {
         Input::Url(b) => (" Google Sheets link ", "Paste the sheet's link (shared as 'anyone with the link can view'):".to_string(), b),
         Input::Folder(b) => (
             " Files folder ",
-            "Folder with the access files - type it, or drag the folder into this window. Empty = `access` next to the sheet:".to_string(),
+            "Folder with the access files: type it (Tab completes), drag it into this window, or press Browse. Empty = `access` next to the sheet:".to_string(),
             b,
         ),
         Input::Subset(b) => (
@@ -871,7 +880,8 @@ fn input_popup(f: &mut Frame, app: &App, area: Rect) {
         Input::Title { id, buf } => (" Collection title ", format!("{id} isn't in the sheet or on the site. Title for the new collection:"), buf),
     };
     let w = area.width.saturating_sub(6).min(100);
-    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height / 3, w, 8);
+    let folder = matches!(app.input, Input::Folder(_));
+    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height / 3, w, if folder { 12 } else { 8 });
     // The end of what's typed, so a long link is visibly there.
     let room = w.saturating_sub(6) as usize;
     let shown = if buf.chars().count() > room {
@@ -897,23 +907,60 @@ fn input_popup(f: &mut Frame, app: &App, area: Rect) {
         Input::Folder(b) if b.trim().is_empty() => Line::from(Span::styled("Enter = use `access` next to the sheet", Style::new().fg(Color::DarkGray))),
         Input::Folder(b) => {
             // Only exists-or-not while typing: counting `/` would walk the disk.
-            if super::clean_path(b).is_dir() {
-                Line::from(Span::styled("✓ folder found - Enter to use it", Style::new().fg(Color::Green)))
+            let full = super::pathbox::resolve(b, &std::env::current_dir().unwrap_or_default());
+            if full.is_dir() {
+                Line::from(Span::styled(format!("✓ {} - Enter to use it", full.display()), Style::new().fg(Color::Green)))
             } else {
-                Line::from(Span::styled("✗ no such folder", Style::new().fg(Color::Yellow)))
+                Line::from(Span::styled(format!("✗ no folder at {} - Tab completes the name", full.display()), Style::new().fg(Color::Yellow)))
             }
         }
         _ => Line::from(""),
     };
+    let mut lines = vec![
+        Line::from(prompt),
+        Line::from(""),
+        Line::from(Span::styled(format!("> {shown}▏"), Style::new().fg(ACCENT))),
+        Line::from(""),
+        check,
+    ];
+    if folder {
+        // What Tab found: the folders to choose from, or that none matched.
+        lines.push(match &app.folder_hint {
+            Some(m) if m.is_empty() => Line::from(Span::styled("No folder there starts with that", Style::new().fg(Color::Yellow))),
+            Some(m) => {
+                let room = w.saturating_sub(12) as usize;
+                let mut shown = String::new();
+                let mut n = 0;
+                for name in m {
+                    if shown.chars().count() + name.chars().count() + 2 > room {
+                        break;
+                    }
+                    shown.push_str(name);
+                    shown.push_str("  ");
+                    n += 1;
+                }
+                let more = if n < m.len() { format!("(+{} more - type more of the name)", m.len() - n) } else { String::new() };
+                Line::from(vec![Span::styled("Folders: ", Style::new().fg(Color::DarkGray)), Span::raw(shown), Span::styled(more, Style::new().fg(Color::DarkGray))])
+            }
+            None => Line::from(""),
+        });
+        lines.push(Line::from(""));
+        let label = if app.picker_rx.is_some() { " Folder window open… " } else { " Browse… " };
+        let button = Span::styled(label, Style::new().fg(Color::Black).bg(ACCENT));
+        lines.push(Line::from(vec![
+            button,
+            Span::styled("  or Ctrl+O - pick the folder in a window instead of typing", Style::new().fg(Color::DarkGray)),
+        ]));
+        // Paragraph rows: the border, the wrapped prompt, then the lines above.
+        let prompt_rows = (prompt_len(&lines[0]) as u16).div_ceil(w.saturating_sub(2).max(1));
+        let y = rect.y + 1 + prompt_rows + 6;
+        if y < rect.bottom().saturating_sub(1) {
+            app.hits.borrow_mut().push((Rect::new(rect.x + 1, y, label.chars().count() as u16, 1), Hit::Key(KeyCode::F(2))));
+        }
+    }
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(vec![
-            Line::from(prompt),
-            Line::from(""),
-            Line::from(Span::styled(format!("> {shown}▏"), Style::new().fg(ACCENT))),
-            Line::from(""),
-            check,
-        ])
+        Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(Block::bordered().title(title).border_style(Style::new().fg(ACCENT))),
         rect,

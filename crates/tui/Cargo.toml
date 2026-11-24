@@ -11,3 +11,6 @@ ratatui.workspace = true
 crossterm.workspace = true
 csv.workspace = true
 dunce.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

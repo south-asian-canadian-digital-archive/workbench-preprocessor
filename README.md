@@ -66,7 +66,12 @@ Do these steps for each batch. Ingest into **test** first. Ingest into **prod** 
 3. **Select the sheet.**
    - For a file, use ↑ ↓ to select it.
    - For a Google Sheet, press `u` and paste the link. The sheet must be shared as "anyone with the link".
-4. **Select the files folder.** Press `f` and type the folder path, or drag the folder into the window. Press Enter. The panel shows how many files the folder holds.
+4. **Select the files folder.** Press `f`. Then do one of these:
+   - Click **Browse…** (or press Ctrl+O) and select the folder in the window that opens.
+   - Type the path. Press `Tab` to complete a folder name. The box lists the folders that match.
+   - Drag the folder into the terminal window.
+
+   The box shows the full path when the folder exists. Press Enter to use it. The panel then shows how many files the folder holds.
 
    <img src="docs/screenshots/02-files-folder.png" alt="02-files-folder" width="760">
 
