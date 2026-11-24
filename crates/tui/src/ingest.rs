@@ -147,7 +147,12 @@ fn said(line: &str) -> Option<Said> {
         Some(Said::MediaFailed)
     } else if (t.starts_with("Node for ") || t.starts_with("Term ")) && t.contains(" not created") {
         Some(Said::Failed)
-    } else if (t.starts_with("Node for ") && t.contains(" created at ")) || (t.starts_with("Term \"") && t.ends_with(" created.")) {
+    } else if (t.starts_with("Node for ") && t.contains(" created at "))
+        || (t.starts_with("Term \"") && t.ends_with(" created."))
+        // Items already on the site: updated, or a file added.
+        || (t.starts_with("Node ") && t.contains("/node/") && t.trim_end_matches('.').ends_with(" updated"))
+        || (t.starts_with("Media for \"") && t.contains(" created and added to "))
+    {
         Some(Said::Created)
     } else if t.contains("skipping it.") || (t.starts_with("Term \"") && t.contains(" already exists")) {
         Some(Said::Skipped)
@@ -197,7 +202,7 @@ enum Rollback {
     /// Choosing what to roll back: one box per `Screen::created` group.
     Choosing { chosen: Vec<bool>, cursor: usize },
     /// Asked "delete these?" and waiting for y.
-    Confirm { chosen: Vec<bool> },
+    Confirm { chosen: Vec<bool>, cursor: usize },
     Running,
     Finished(Result<(), String>),
 }
@@ -242,8 +247,13 @@ struct Screen {
     cfg: Option<Config>,
     created: Vec<sacda::rollback::Created>,
     rb: Rollback,
-    /// The rollback's messages while it runs.
+    /// The rollback's messages while it runs, and its stop handle.
     rb_rx: Option<mpsc::Receiver<Msg>>,
+    rb_job: Option<Arc<Progress>>,
+    /// q pressed once while rolling back: the next q stops it.
+    rb_stop_asked: bool,
+    /// What this ingest created was rolled back (its links lead nowhere now).
+    rolled_back: bool,
     /// Workbench's adaptive pauses: how many, how long in all, and the last one.
     pauses: usize,
     paused_secs: u64,
@@ -274,6 +284,9 @@ impl Screen {
             created: Vec::new(),
             rb: Rollback::Closed,
             rb_rx: None,
+            rb_job: None,
+            rb_stop_asked: false,
+            rolled_back: false,
             bundle: dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".into()),
             lines: Vec::new(),
             back: 0,
@@ -310,6 +323,10 @@ impl Screen {
                     if self.done.is_some() {
                         let failed = matches!(self.done, Some(Err(_)));
                         match k.code {
+                            KeyCode::Char('o') if self.rolled_back => {
+                                self.note = Some("Rolled back - there's nothing on the site to open".into());
+                                continue;
+                            }
                             KeyCode::Char('o') => {
                                 self.note = Some(match self.main_link() {
                                     Some(u) => match crate::open_url(&u) {
@@ -393,7 +410,10 @@ impl Screen {
             Msg::RolledBack(r) => {
                 if r.is_ok() {
                     self.created.clear();
+                    self.rolled_back = true;
                 }
+                self.rb_job = None;
+                self.rb_stop_asked = false;
                 self.note = Some(match &r {
                     Ok(()) => "Rolled back. Rollback log: g/logs/organise/".to_string() + &self.bundle + "-rollback.log",
                     Err(e) => format!("Rollback: {e}"),
@@ -545,13 +565,13 @@ impl Screen {
 
         // Keys.
         let rb_keys = if self.created.is_empty() || self.rb == Rollback::Running { "" } else { "r roll back · " };
-        let hint = if let Rollback::Confirm { chosen } = &self.rb {
+        let hint = if let Rollback::Confirm { chosen, .. } = &self.rb {
             Line::from(Span::styled(
                 format!("{} y = delete, any other key = back", self.rollback_question(chosen)),
                 Style::new().fg(Color::Red).bold(),
             ))
-        } else if self.rb == Rollback::Running {
-            Line::from(Span::styled("Rolling back - deleting what this ingest created ...", Style::new().fg(Color::Yellow)))
+        } else if self.rb == Rollback::Running && self.note.is_none() {
+            Line::from(Span::styled("Rolling back - deleting what this ingest created ... (q stops it)", Style::new().fg(Color::Yellow)))
         } else if matches!(self.rb, Rollback::Choosing { .. }) {
             Line::from(Span::styled("↑↓ move · Space choose · a all · Enter roll back · Esc close", Style::new().fg(Color::DarkGray)))
         } else if self.confirm_stop {
@@ -584,17 +604,30 @@ impl Screen {
         use sacda::rollback::{with_dependencies, without};
         match self.rb.clone() {
             Rollback::Running => {
-                if matches!(code, KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter) {
-                    self.note = Some("Rolling back - wait for it to finish".into());
+                if matches!(code, KeyCode::Char('q') | KeyCode::Esc) {
+                    if self.rb_stop_asked {
+                        if let Some(j) = &self.rb_job {
+                            j.cancel();
+                        }
+                        self.note = Some("Stopping the rollback after the current node or term ...".into());
+                    } else {
+                        self.rb_stop_asked = true;
+                        self.note = Some("q again stops the rollback (what's already deleted stays deleted)".into());
+                    }
                     return true;
                 }
-                false
+                // Only scrolling while it runs.
+                !matches!(
+                    code,
+                    KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+                        | KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g') | KeyCode::Char('G') | KeyCode::Char(' ')
+                )
             }
-            Rollback::Confirm { chosen } => {
+            Rollback::Confirm { chosen, cursor } => {
                 if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
                     self.start_rollback(&chosen);
                 } else {
-                    self.rb = Rollback::Choosing { chosen, cursor: 0 };
+                    self.rb = Rollback::Choosing { chosen, cursor };
                 }
                 true
             }
@@ -614,7 +647,7 @@ impl Screen {
                     }
                     KeyCode::Char('a') => chosen = vec![true; self.created.len()],
                     KeyCode::Enter if chosen.iter().any(|c| *c) => {
-                        self.rb = Rollback::Confirm { chosen };
+                        self.rb = Rollback::Confirm { chosen, cursor };
                         return true;
                     }
                     KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
@@ -659,6 +692,8 @@ impl Screen {
     }
 
     fn start_rollback(&mut self, chosen: &[bool]) {
+        let job = Arc::new(Progress::default());
+        self.rb_job = Some(job.clone());
         let Some(cfg) = self.cfg.clone() else {
             self.note = Some("Can't roll back from here - no settings".into());
             self.rb = Rollback::Closed;
@@ -668,7 +703,7 @@ impl Screen {
         let (site, bundle) = (self.site(), self.bundle.clone());
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let _job = sacda::progress::enter(Arc::new(Progress::default()));
+            let _job = sacda::progress::enter(job);
             let send = |m: Msg| {
                 let _ = tx.send(m);
             };
@@ -692,7 +727,7 @@ impl Screen {
         use ratatui::widgets::Clear;
         let (chosen, cursor) = match &self.rb {
             Rollback::Choosing { chosen, cursor } => (chosen.clone(), Some(*cursor)),
-            Rollback::Confirm { chosen } => (chosen.clone(), None),
+            Rollback::Confirm { chosen, .. } => (chosen.clone(), None),
             _ => return,
         };
         let mut lines = vec![
@@ -757,7 +792,7 @@ impl Screen {
         let runs: Vec<_> = self.stats.iter().filter(|s| !s.checking).collect();
         let checks: Duration = self.stats.iter().filter(|s| s.checking).filter_map(|s| s.took).sum();
         let w = runs.iter().map(|s| s.label.chars().count()).max().unwrap_or(4).max(4);
-        out.push(format!("{:<w$}  {:>8}  {:>7}  {:>7}  {:>6}", "Step", "Time", "Created", "Skipped", "Failed"));
+        out.push(format!("{:<w$}  {:>8}  {:>7}  {:>7}  {:>6}", "Step", "Time", "Done", "Skipped", "Failed"));
         for s in &runs {
             let failed = if s.media_failed > 0 { format!("{} (+{} media)", s.failed, s.media_failed) } else { s.failed.to_string() };
             out.push(format!(
@@ -773,7 +808,7 @@ impl Screen {
         let created: usize = runs.iter().map(|s| s.created).sum();
         let new_nodes = self.nodes.iter().filter(|n| n.new).count();
         out.push(String::new());
-        out.push(format!("Total {} (checks {}); {created} created", fmt_dur(total), fmt_dur(checks)));
+        out.push(format!("Total {} (checks {}); {created} done", fmt_dur(total), fmt_dur(checks)));
         if new_nodes > 0 {
             let ingest: Duration = runs.iter().filter(|s| !s.label.starts_with("terms-")).filter_map(|s| s.took).sum();
             out.push(format!(

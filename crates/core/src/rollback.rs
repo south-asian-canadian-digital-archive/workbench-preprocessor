@@ -135,10 +135,19 @@ pub fn rollback_nodes(rollback: &Path) -> Vec<(String, String)> {
 }
 
 /// Terms a terms job logged as created, from byte `from` of its log: (term ID, name).
+/// A log shorter than `from` (replaced during the run) gives nothing: its
+/// older lines could name terms another ingest made.
 pub fn logged_terms(log: &Path, from: u64) -> Vec<(String, String)> {
-    let Ok(bytes) = std::fs::read(log) else { return vec![] };
-    let start = if (from as usize) <= bytes.len() { from as usize } else { 0 };
-    String::from_utf8_lossy(&bytes[start..]).lines().filter_map(term_line).collect()
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(log) else { return vec![] };
+    if f.metadata().map(|m| m.len()).unwrap_or(0) < from || f.seek(SeekFrom::Start(from)).is_err() {
+        return vec![];
+    }
+    let mut bytes = Vec::new();
+    if f.read_to_end(&mut bytes).is_err() {
+        return vec![];
+    }
+    String::from_utf8_lossy(&bytes).lines().filter_map(term_line).collect()
 }
 
 /// 'Term 123 ("Name") added to vocabulary "subject".'
@@ -154,10 +163,32 @@ fn term_line(line: &str) -> Option<(String, String)> {
 }
 
 /// A copy of Workbench's rollback config that logs where organise's logs are,
-/// so a rollback run has a log next to the ingest's.
+/// so a rollback run has a log next to the ingest's - and deletes children
+/// before their parents (its CSV lists them in the order they were made).
 pub fn runnable_config(rollback: &Path, log: &Path) -> std::io::Result<PathBuf> {
     let text = std::fs::read_to_string(rollback)?;
     let mut out = text.clone();
+    if let Some(csv) = yaml_value(&text, "input_csv") {
+        if let Ok(rows) = std::fs::read_to_string(&csv) {
+            let mut keep: Vec<&str> = Vec::new();
+            let mut data: Vec<&str> = Vec::new();
+            for (i, l) in rows.lines().enumerate() {
+                if i == 0 || l.starts_with('#') {
+                    keep.push(l);
+                } else {
+                    data.push(l);
+                }
+            }
+            data.reverse();
+            let p = Path::new(&csv);
+            let name = format!("organise-{}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+            let reversed = p.with_file_name(name);
+            let body: String = keep.iter().chain(data.iter()).map(|l| format!("{l}\n")).collect();
+            if std::fs::write(&reversed, body).is_ok() {
+                out = out.replace(&csv, &reversed.to_string_lossy());
+            }
+        }
+    }
     if yaml_value(&text, "log_file_path").is_none() {
         out.push_str(&format!("\nlog_file_path: \"{}\"\n", log.to_string_lossy().replace('\\', "/").replace('"', "\\\"")));
     }

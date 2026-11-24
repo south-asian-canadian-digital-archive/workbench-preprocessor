@@ -48,6 +48,9 @@ pub enum Fix {
     /// Rows and files that don't pair up. On = leave them out of the ingest
     /// and list them in a CSV in the bundle; off = ingest them anyway.
     FileGap(Gap),
+    /// Items already on the site without any media whose file is in the files
+    /// folder: on = upload the file to the existing item.
+    AddMedia,
 }
 
 /// The ways rows and access files can fail to pair up.
@@ -94,6 +97,7 @@ impl Fix {
                 Gap::MissingFile => format!("leave out the rows whose file is missing (listed in {})", g.csv()),
                 Gap::Unmatched => format!("leave out the files no row uses (listed in {})", g.csv()),
             },
+            Fix::AddMedia => "upload their files to the items already on the site".to_string(),
         }
     }
 }
@@ -179,6 +183,13 @@ pub struct Report {
     pub dropped_columns: Vec<String>,
     /// Items already on the site (by identifier): left out of the bundle.
     pub on_site_items: std::collections::HashSet<String>,
+    /// Their node IDs, by identifier.
+    pub on_site_nids: HashMap<String, String>,
+    /// Items already on the site with no media, whose one file is here.
+    pub missing_media: Vec<String>,
+    /// What to do with the items already on the site (from `Options`).
+    pub update_columns: Vec<String>,
+    pub replace_media: bool,
     /// Files in the access folder that no row uses.
     pub unmatched_files: Vec<std::path::PathBuf>,
     /// Unmatched files that could become items of their own: (identifier
@@ -205,6 +216,11 @@ pub struct Options {
     pub offline: bool,
     /// Ignore the `file` column: every access file is `<identifier>.<ext>`.
     pub files_by_identifier: bool,
+    /// Items already on the site: these sheet columns overwrite theirs
+    /// (Workbench's `update` task). Empty = leave them alone.
+    pub update_columns: Vec<String>,
+    /// Items already on the site: replace their media with the file here.
+    pub replace_media: bool,
 }
 
 /// State that outlives one check: the site client and everything fetched
@@ -221,6 +237,8 @@ pub struct Session {
     term_fields: HashMap<String, Result<Vec<String>, String>>,
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
+    /// Media per node already on the site (None: the lookup failed).
+    media: HashMap<String, Option<usize>>,
     prefetched: std::collections::HashSet<String>,
     /// Collections whose "what's already on the site" lookup failed in this
     /// check, with the error. Not cached: the next check asks again.
@@ -272,6 +290,7 @@ impl Session {
             term_fields: HashMap::new(),
             lang: None,
             nodes: HashMap::new(),
+            media: HashMap::new(),
             prefetched: Default::default(),
             node_errors: Default::default(),
             progress: false,
@@ -334,6 +353,47 @@ impl Session {
             Ok(m) => Ok(m),
             Err(e) => Err(e.clone()),
         }
+    }
+
+    /// How many media each of these nodes has (None: the lookup failed).
+    /// Asked once per node per session, a few at a time.
+    pub fn media_counts(&mut self, nids: &[String]) -> HashMap<String, Option<usize>> {
+        let todo: Vec<String> = nids.iter().filter(|n| !self.media.contains_key(*n)).cloned().collect();
+        if let (Some(site), false) = (self.site.as_ref(), todo.is_empty()) {
+            let done = std::sync::atomic::AtomicUsize::new(0);
+            let found = std::sync::Mutex::new(Vec::new());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|sc| {
+                for _ in 0..6 {
+                    sc.spawn(|| {
+                        let _job = super::progress::enter(self.job.clone());
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(nid) = todo.get(i) else { break };
+                            if self.job.cancelled() {
+                                break;
+                            }
+                            let n = site.media_count(nid).ok();
+                            if let Ok(mut f) = found.lock() {
+                                f.push((nid.clone(), n));
+                            }
+                            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                            self.job.say(format!("checking the media of items already on the site ({d} of {})", todo.len()));
+                        }
+                    });
+                }
+            });
+            for (nid, n) in found.into_inner().unwrap_or_default() {
+                // A failed lookup is asked again next time.
+                if n.is_some() {
+                    self.media.insert(nid.clone(), n);
+                }
+                self.media.entry(nid).or_insert(n);
+            }
+        }
+        let out = nids.iter().map(|n| (n.clone(), self.media.get(n).copied().flatten())).collect();
+        self.media.retain(|_, v| v.is_some());
+        out
     }
 
     /// The node already on the site with this identifier. The first lookup under
@@ -615,7 +675,7 @@ pub fn apply(table: &mut Table, titles: &mut HashMap<String, String>, fix: &Fix)
             titles.insert(id.clone(), title.clone());
         }
         // Decided when the bundle is written.
-        Fix::FileGap(_) => {}
+        Fix::FileGap(_) | Fix::AddMedia => {}
     }
 }
 

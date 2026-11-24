@@ -298,10 +298,13 @@ pub fn structure(s: &mut Session, table: &Table, report: &mut Report) {
         let line = row.map(|r| table.rows[r].line).unwrap_or(0);
         // Access identifiers are unique: one already on the site (an earlier
         // batch or subset) is left out, never created twice.
-        if s.site.is_some() && report.attach.keys().any(|r| id.starts_with(&format!("{r}_"))) && s.find_node(&id).is_some() {
+        let existing = if s.site.is_some() && report.attach.keys().any(|r| id.starts_with(&format!("{r}_"))) { s.find_node(&id) } else { None };
+        if let Some(node) = existing {
             report.findings.push(
-                Finding::new(Info, "structure", "item is already on the site - left out (identifiers are unique)").at(line, id.clone()),
+                Finding::new(Info, "structure", format!("item is already on the site (node {}) - left out (identifiers are unique)", node.nid))
+                    .at(line, id.clone()),
             );
+            report.on_site_nids.insert(id.clone(), node.nid);
             report.on_site_items.insert(id);
             continue;
         }
@@ -311,14 +314,16 @@ pub fn structure(s: &mut Session, table: &Table, report: &mut Report) {
                 .push(Finding::new(Error, "structure", "item has no title").at(line, id.clone()));
         }
     }
+    existing_items(s, report);
     // Nothing to do: every item picked is on the site already.
     let new_items = report.tree.of_kind(Kind::Item).filter(|n| !report.on_site_items.contains(&n.id)).count();
-    if new_items == 0 && !report.on_site_items.is_empty() {
+    let other_work = !report.missing_media.is_empty() || !report.update_columns.is_empty() || report.replace_media;
+    if new_items == 0 && !report.on_site_items.is_empty() && !other_work {
         report.findings.push(Finding::new(
             Error,
             "structure",
             format!(
-                "nothing new to ingest - all {} item(s){} are already on the site",
+                "nothing new to ingest - all {} item(s){} are already on the site (to change them, update their fields or media: u on the screen, --update / --replace-media otherwise)",
                 report.on_site_items.len(),
                 table.subset.as_ref().map(|s| format!(" in {s}")).unwrap_or_default()
             ),
@@ -664,4 +669,68 @@ pub fn dates(s: &mut Session, table: &Table, report: &mut Report) {
             }
         }
     }
+}
+
+/// Items already on the site: which have lost their media (or never got
+/// it) while their file is here, and what the chosen update will do.
+fn existing_items(s: &mut Session, report: &mut Report) {
+    report.update_columns = s.opts.update_columns.clone();
+    report.replace_media = s.opts.replace_media;
+    let n = report.on_site_items.len();
+    if n == 0 {
+        return;
+    }
+    // One file, and it's here: the only case a file can be added without guessing.
+    let with_file: Vec<(String, String)> = report
+        .tree
+        .of_kind(Kind::Item)
+        .filter(|i| report.on_site_items.contains(&i.id) && i.files.len() == 1 && i.files[0].path.is_some())
+        .filter_map(|i| Some((i.id.clone(), report.on_site_nids.get(&i.id)?.clone())))
+        .collect();
+    if !report.replace_media && !with_file.is_empty() {
+        let counts = s.media_counts(&with_file.iter().map(|(_, nid)| nid.clone()).collect::<Vec<_>>());
+        let mut missing: Vec<String> = with_file.iter().filter(|(_, nid)| counts.get(nid) == Some(&Some(0))).map(|(id, _)| id.clone()).collect();
+        missing.sort();
+        let failed = with_file.iter().filter(|(_, nid)| counts.get(nid).is_some_and(Option::is_none)).count();
+        if failed > 0 {
+            report.findings.push(Finding::new(
+                Warning,
+                "files",
+                format!("couldn't look up the media of {failed} item(s) already on the site - re-check (r) to try again"),
+            ));
+        }
+        if !missing.is_empty() {
+            let shown: Vec<&str> = missing.iter().take(5).map(String::as_str).collect();
+            let more = if missing.len() > 5 { format!(", +{} more", missing.len() - 5) } else { String::new() };
+            report.findings.push(
+                Finding::new(
+                    Warning,
+                    "files",
+                    format!(
+                        "{} item(s) are on the site without any media, and their file is in the files folder ({}{more}) - upload it to them?",
+                        missing.len(),
+                        shown.join(", ")
+                    ),
+                )
+                .with_fix(Fix::AddMedia, false),
+            );
+            report.missing_media = missing;
+        }
+    }
+    let mut what = Vec::new();
+    if !report.update_columns.is_empty() {
+        what.push(format!("their {} updated from the sheet", report.update_columns.join(", ")));
+    }
+    if report.replace_media {
+        what.push(format!("the media of the {} with their file here replaced", with_file.len()));
+    }
+    report.findings.push(Finding::new(
+        Info,
+        "structure",
+        if what.is_empty() {
+            format!("{n} item(s) are already on the site and left out - to change them instead, choose what to update (u on the screen, --update / --replace-media otherwise)")
+        } else {
+            format!("{n} item(s) already on the site: {}", what.join("; "))
+        },
+    ));
 }

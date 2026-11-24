@@ -110,13 +110,18 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
 
     // Which bundle each row lands in decides which field definitions apply.
     let mut row_bundle: Vec<Option<&'static str>> = vec![None; table.rows.len()];
+    // Rows of items already on the site: only the columns being updated count.
+    let mut update_only = vec![false; table.rows.len()];
     for n in report.tree.nodes.values() {
-        // Already on the site: the row isn't ingested, so its terms don't matter.
-        if report.on_site_items.contains(&n.id) || report.attach.contains_key(&n.id) {
+        // Already on the site: the row isn't ingested, so its terms don't matter
+        // - unless its fields are being updated from the sheet.
+        let updating = !s.opts.update_columns.is_empty() && report.on_site_items.contains(&n.id);
+        if (report.on_site_items.contains(&n.id) && !updating) || report.attach.contains_key(&n.id) {
             continue;
         }
         if let Some(r) = n.row {
             row_bundle[r] = Some(if n.kind == Kind::Item { "islandora_object" } else { "archival_component" });
+            update_only[r] = updating;
         }
     }
     for &r in &report.tree.extra_file_rows {
@@ -131,6 +136,9 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 return;
             }
             let Some(bundle) = row_bundle[i] else { continue };
+            if update_only[i] && !s.opts.update_columns.contains(&col) {
+                continue;
+            }
             let Some(def) = s.cfg.schema.fields(bundle).get(&col).cloned() else { continue };
             if !def.is_taxonomy() || col == "field_model" || col == "field_archival_level" {
                 continue;

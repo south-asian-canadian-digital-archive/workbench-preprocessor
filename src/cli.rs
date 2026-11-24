@@ -42,6 +42,19 @@ pub struct Cli {
     #[arg(long)]
     pub keep_unpaired: bool,
 
+    /// Items already on the site: overwrite these of their fields from the sheet, by column (comma-separated,
+    /// or `all`); the items are otherwise left alone
+    #[arg(long, value_name = "COLUMNS")]
+    pub update: Option<String>,
+
+    /// Items already on the site: replace their media with the file in the files folder
+    #[arg(long)]
+    pub replace_media: bool,
+
+    /// Items already on the site with no media: upload their file from the files folder
+    #[arg(long)]
+    pub add_missing_media: bool,
+
     /// No interactive screen: print the report and write the bundle if it's clean
     #[arg(long)]
     pub plain: bool,

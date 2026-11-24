@@ -124,6 +124,21 @@ pub struct Review {
     /// moves the selection, not the view.
     pub list_offset: Cell<usize>,
     pub term_offset: Cell<usize>,
+    /// Items already on the site: the sheet columns that overwrite theirs, and
+    /// whether their media is replaced. Used from the next check on.
+    pub update_cols: Vec<String>,
+    pub replace_media: bool,
+    /// The `u` panel, while it's open.
+    pub picker: Option<UpdatePicker>,
+}
+
+/// Choosing what to change on the items already on the site: row 0 is
+/// "replace their media", then one row per updatable column.
+#[derive(Debug, Clone)]
+pub struct UpdatePicker {
+    pub media: bool,
+    pub cols: Vec<(String, bool)>,
+    pub cursor: usize,
 }
 
 impl Review {
@@ -259,6 +274,8 @@ pub struct App {
     pub folder_counts: RefCell<HashMap<PathBuf, Option<Option<usize>>>>,
     /// After Tab in the folder box: the folders that matched (empty: none did).
     pub folder_hint: Option<Vec<String>>,
+    /// The `?` list of every key on this screen is open.
+    pub help: bool,
     /// The system folder window, while it's open.
     pub picker_rx: Option<mpsc::Receiver<Result<Option<PathBuf>, String>>>,
 }
@@ -432,6 +449,7 @@ impl App {
             count_tx,
             count_rx,
             folder_hint: None,
+            help: false,
             picker_rx: None,
             pending_input: start.input.clone(),
             start,
@@ -575,6 +593,11 @@ impl App {
             collection_title: self.start.collection_title.clone(),
             offline: false,
             files_by_identifier: self.by_identifier(Some(input)),
+            update_columns: match &self.screen {
+                Screen::Review(r) if r.input_name == input => r.update_cols.clone(),
+                _ => Vec::new(),
+            },
+            replace_media: matches!(&self.screen, Screen::Review(r) if r.input_name == input && r.replace_media),
         }
     }
 
@@ -670,6 +693,7 @@ impl App {
         let cfg = self.cfg.clone();
         let sheet = self.start.sheet.clone();
         let opts = self.options(&input);
+        let (upd_cols, upd_media) = (opts.update_columns.clone(), opts.replace_media);
         let subset = match self.subset_for(&input) {
             Ok(s) => s,
             Err(e) => {
@@ -704,6 +728,9 @@ impl App {
                     }
                 };
                 session.job = p.clone();
+                // A kept session has the options of its first check: bring the update choice up to date.
+                session.opts.update_columns = upd_cols;
+                session.opts.replace_media = upd_media;
                 let base = table.as_ref().unwrap_or(&original);
                 let settled = session.settle(base, &accepted, &rejected);
                 let cancelled = p.cancelled();
@@ -814,6 +841,9 @@ impl App {
                     changes: 0,
                     no_link: HashSet::new(),
                     term_sel: 0,
+                    update_cols: Vec::new(),
+                    replace_media: false,
+                    picker: None,
                     list_offset: Cell::new(0),
                     term_offset: Cell::new(0),
                 };
@@ -1340,6 +1370,17 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
         }
     }
 
+    // ? lists every key of the screen; any key closes the list.
+    if app.help {
+        app.help = false;
+        return Ok(Flow::Continue);
+    }
+    let picker_open = matches!(&app.screen, Screen::Review(r) if r.picker.is_some());
+    if key.code == KeyCode::Char('?') && !picker_open && !matches!(app.screen, Screen::Written { .. }) {
+        app.help = true;
+        return Ok(Flow::Continue);
+    }
+
     // Esc while checking cancels the check, wherever you are.
     if key.code == KeyCode::Esc && app.job.is_some() {
         app.cancel_job();
@@ -1422,6 +1463,55 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
             }
         }
         Screen::Review(r) => {
+            if let Some(p) = r.picker.as_mut() {
+                let rows = p.cols.len() + 1;
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => p.cursor = p.cursor.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => p.cursor = (p.cursor + 1).min(rows - 1),
+                    KeyCode::Char(' ') if p.cursor == 0 => p.media = !p.media,
+                    KeyCode::Char(' ') => {
+                        let c = &mut p.cols[p.cursor - 1].1;
+                        *c = !*c;
+                    }
+                    KeyCode::Char('a') => {
+                        let all = p.cols.iter().all(|c| c.1);
+                        p.cols.iter_mut().for_each(|c| c.1 = !all);
+                    }
+                    KeyCode::Enter => {
+                        let cols: Vec<String> = p.cols.iter().filter(|c| c.1).map(|c| c.0.clone()).collect();
+                        let media = p.media;
+                        if cols != r.update_cols || media != r.replace_media {
+                            r.changes += 1;
+                        }
+                        r.update_cols = cols;
+                        r.replace_media = media;
+                        r.picker = None;
+                        app.status = if r.update_cols.is_empty() && !r.replace_media {
+                            "Items already on the site: left alone. Press c to re-check".into()
+                        } else {
+                            "Items already on the site: choice saved. Press c to re-check".into()
+                        };
+                    }
+                    KeyCode::Esc | KeyCode::Char('u') => r.picker = None,
+                    _ => {}
+                }
+                return Ok(Flow::Continue);
+            }
+            if key.code == KeyCode::Char('u') {
+                if r.report.on_site_items.is_empty() {
+                    app.status = "None of this sheet's items are on the site yet - nothing to update".into();
+                } else {
+                    let cols = sacda::bundle::updatable_columns(&app.cfg, &r.fixed, &r.report)
+                        .into_iter()
+                        .map(|c| {
+                            let on = r.update_cols.contains(&c);
+                            (c, on)
+                        })
+                        .collect();
+                    r.picker = Some(UpdatePicker { media: r.replace_media, cols, cursor: 0 });
+                }
+                return Ok(Flow::Continue);
+            }
             let action = review_key(r, key);
             return perform(app, term, action);
         }

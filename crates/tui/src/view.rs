@@ -54,8 +54,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     let foot = footer(app);
     register_chips(app, &foot, rows[3]);
     f.render_widget(Paragraph::new(foot), rows[3]);
+    if let Screen::Review(r) = &app.screen {
+        update_popup(f, r, area);
+    }
     job_dialog(f, app, area);
     input_popup(f, app, area);
+    help_popup(f, app, area);
 }
 
 /// Jobs that hold up everything else (pulling a sheet, the first check)
@@ -276,39 +280,45 @@ fn footer(app: &App) -> Line<'static> {
     if !matches!(app.input, Input::None) {
         return keys(&[("Enter", "ok"), ("Esc", "cancel")]);
     }
+    if app.help {
+        return keys(&[("any key", "close")]);
+    }
     if app.job.is_some() && !matches!(app.screen, Screen::Review(_)) {
         return keys(&[("Esc", "cancel"), ("q", "quit")]);
     }
+    // Only what's needed now; ? lists the rest.
     match &app.screen {
         Screen::Pick => {
-            let mut k = vec![("↑↓", "sheet"), ("←→", "site"), ("Enter", "check"), ("u", "add Google Sheets link"), ("f", "files folder"), ("m", "file names"), ("s", "rows"), ("c", "clean temp files")];
-            if app.selected_input().is_some_and(|s| sacda::source::is_url(&s)) {
-                k.push(("x", "remove link"));
+            let mut k = vec![("↑↓", "sheet"), ("←→", "site"), ("Enter", "check"), ("f", "files folder")];
+            if app.files.is_empty() && app.sheets.links().is_empty() {
+                k.push(("u", "add Google Sheets link"));
             }
-            k.push(("q", "quit"));
+            k.extend([("?", "more keys"), ("q", "quit")]);
             keys(&k)
+        }
+        Screen::Review(r) if r.picker.is_some() => {
+            keys(&[("↑↓", "move"), ("Space", "choose"), ("a", "all columns"), ("Enter", "done"), ("Esc", "cancel")])
         }
         Screen::Review(r) => {
             let ready = app.job.is_none() && r.not_ready().is_none();
-            let mut k: Vec<(&str, &str)> = match r.tab {
-                Tab::Findings => vec![("y", "use fix"), ("n", "keep as is"), ("a", "use all"), ("o", "open link")],
-                Tab::Terms => vec![("Space", "link on/off"), ("L", "all links"), ("o", "open link")],
-                Tab::Tree => vec![("↑↓", "scroll")],
-            };
+            let mut k: Vec<(&str, &str)> = Vec::new();
+            let decision = matches!(r.tab, Tab::Findings)
+                && matches!(r.entries.get(r.sel), Some(Entry::Finding(i)) if r.report.findings.get(*i).is_some_and(|f| f.fix.is_some()));
+            if decision {
+                k.extend([("y", "yes"), ("n", "no")]);
+            }
+            if r.undecided() > 0 {
+                k.push(("a", "yes to all"));
+            }
             if app.job.is_some() {
                 k.push(("Esc", "cancel check"));
-            } else {
-                let c_label = if r.changes > 0 { "re-check (needed)" } else { "re-check" };
-                k.push(("c", c_label));
-                k.push(("r", "re-read sheet"));
-                k.push(("s", "rows"));
-                k.push(("f", "files folder"));
+            } else if r.changes > 0 {
+                k.push(("c", "re-check (needed)"));
             }
             if ready {
-                k.push(("w", "write"));
-                k.push(("i", "write+ingest"));
+                k.extend([("w", "write"), ("i", "write+ingest")]);
             }
-            k.push(("Tab", "view (h/l)"));
+            k.extend([("Tab", "view (h/l)"), ("?", "more keys")]);
             if app.job.is_none() {
                 k.push(("Esc", "back"));
             }
@@ -316,6 +326,86 @@ fn footer(app: &App) -> Line<'static> {
         }
         Screen::Written { .. } => keys(&[("i", "ingest now"), ("Enter", "done")]),
     }
+}
+
+/// Every key of the screen, for `?`.
+fn help_popup(f: &mut Frame, app: &App, area: Rect) {
+    if !app.help {
+        return;
+    }
+    let rows: Vec<(&str, &str)> = match &app.screen {
+        Screen::Pick => vec![
+            ("↑↓", "choose a sheet"),
+            ("←→", "choose the site"),
+            ("Enter", "check the sheet against the site"),
+            ("u", "add a Google Sheets link"),
+            ("x", "remove the chosen Google Sheets link"),
+            ("f", "set the files folder (Tab completes, Ctrl+O browses)"),
+            ("m", "file names: the file column, or always <identifier>.<ext>"),
+            ("s", "use only some rows"),
+            ("c", "delete temporary files"),
+            ("q", "quit"),
+        ],
+        _ => vec![
+            ("y / n", "yes / no to the chosen suggestion"),
+            ("a", "yes to every undecided suggestion"),
+            ("o", "open the chosen finding's link"),
+            ("Space / L", "New terms: one / every authority link on or off"),
+            ("u", "items already on the site: update their fields or media"),
+            ("t", "title a collection that's in neither the sheet nor the site"),
+            ("c", "re-check with your choices"),
+            ("r", "read the sheet and the site again"),
+            ("s", "use only some rows"),
+            ("f", "change the files folder"),
+            ("w", "write the bundle"),
+            ("i", "write the bundle and ingest it"),
+            ("Tab, h / l, 1 2 3", "change the view"),
+            ("Esc", "back to the sheets"),
+        ],
+    };
+    let w = area.width.saturating_sub(8).min(80);
+    let h = (rows.len() as u16 + 4).min(area.height);
+    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height.saturating_sub(h) / 3, w, h);
+    let lines: Vec<Line> = rows
+        .iter()
+        .map(|(k, what)| Line::from(vec![Span::styled(format!(" {k:<18}"), Style::new().fg(ACCENT).bold()), Span::raw(what.to_string())]))
+        .collect();
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(lines).block(Block::bordered().title(" Keys - any key closes ").border_style(Style::new().fg(ACCENT))), rect);
+}
+
+/// The `u` panel: what to change on the items already on the site.
+fn update_popup(f: &mut Frame, r: &Review, area: Rect) {
+    let Some(p) = &r.picker else { return };
+    let mut lines = vec![
+        Line::from(format!("{} item(s) in the sheet are already on the site. Choose what to change on them:", r.report.on_site_items.len())),
+        Line::from(""),
+    ];
+    let row = |i: usize, on: bool, text: String| {
+        let style = if p.cursor == i { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() };
+        Line::from(Span::styled(format!(" [{}] {text} ", if on { "x" } else { " " }), style))
+    };
+    lines.push(row(0, p.media, "Replace their media with the file in the files folder".into()));
+    lines.push(Line::from(Span::styled(" Overwrite these fields from the sheet:", Style::new().fg(Color::DarkGray))));
+    // Keep the cursor in view in a long column list.
+    let room = area.height.saturating_sub(12) as usize;
+    let first = p.cursor.saturating_sub(1).saturating_sub(room.saturating_sub(1)).min(p.cols.len().saturating_sub(room.max(1)));
+    for (i, (c, on)) in p.cols.iter().enumerate().skip(first).take(room.max(1)) {
+        lines.push(row(i + 1, *on, c.clone()));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Nothing chosen = leave them as they are. The choice is used from the next re-check (c).",
+        Style::new().fg(Color::DarkGray),
+    )));
+    let w = area.width.saturating_sub(8).min(96);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + area.height.saturating_sub(h) / 3, w, h);
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" Items already on the site ").border_style(Style::new().fg(Color::Yellow))),
+        rect,
+    );
 }
 
 fn pick(f: &mut Frame, app: &App, area: Rect) {

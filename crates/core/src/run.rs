@@ -36,6 +36,11 @@ fn is_record(line: &str) -> bool {
     (t.starts_with("Node for ") && (t.contains(" created at ") || t.contains(" not created")))
         || (t.starts_with("Term \"") && (t.ends_with(" created.") || t.contains(" not created") || t.contains(" already exists")))
         || t.contains("skipping it.")
+        // update, add_media, delete_media_by_node
+        || (t.starts_with("Node ") && t.contains("/node/") && (t.contains(" updated") || t.contains(" not updated")))
+        || (t.starts_with("Media for \"") && t.contains(" created and added to "))
+        || (t.starts_with("Media for ") && t.contains(" not created"))
+        || (t.starts_with("Node ") && t.contains("'s media ") && t.ends_with(" deleted."))
 }
 
 /// Rows a step's CSVs hold (its own, plus those of the tasks it covers).
@@ -289,8 +294,9 @@ pub fn rollback(cfg: &Config, site: &str, bundle: &str, groups: &[crate::rollbac
     groups.sort_by_key(|g| g.kind.order());
     let of = groups.len();
     let log = cfg.g_root.join("logs/organise").join(format!("{bundle}-rollback.log"));
-    let mut failed = 0;
     for (i, g) in groups.iter().enumerate() {
+        // Per group: a failure stops the groups after it, which depend on this one.
+        let mut failed = 0;
         let label = format!("roll back {}", match &g.kind {
             Kind::Items => "items".to_string(),
             Kind::Components => "components".to_string(),
@@ -305,8 +311,15 @@ pub fn rollback(cfg: &Config, site: &str, bundle: &str, groups: &[crate::rollbac
                     if crate::progress::cancelled_here() {
                         bail!("rollback stopped partway");
                     }
-                    match s.delete_term(tid) {
-                        Ok(()) => ev(Event::Line(&format!("Term {tid} (\"{name}\") deleted."))),
+                    let vocab = match &g.kind {
+                        Kind::Terms(v) => v.as_str(),
+                        _ => "",
+                    };
+                    match s.delete_term(tid, vocab, name) {
+                        Ok(true) => ev(Event::Line(&format!("Term {tid} (\"{name}\") deleted."))),
+                        Ok(false) => ev(Event::Line(&format!(
+                            "Term {tid} isn't \"{name}\" in {vocab} any more - left alone"
+                        ))),
                         Err(e) => {
                             failed += 1;
                             ev(Event::Line(&format!("ERROR: term {tid} (\"{name}\") not deleted: {e:#}")));
@@ -337,9 +350,13 @@ pub fn rollback(cfg: &Config, site: &str, bundle: &str, groups: &[crate::rollbac
                 }
             }
         }
-    }
-    if failed > 0 {
-        bail!("rollback finished with {failed} error(s) - see the output above");
+        if failed > 0 {
+            let rest: Vec<String> = groups[i + 1..].iter().map(|g| g.kind.describe(g.entries.len())).collect();
+            bail!(
+                "{label}: {failed} error(s) - stopped here{}. Roll back again to retry (what's already gone is skipped)",
+                if rest.is_empty() { String::new() } else { format!(", so these are left as they are: {}", rest.join("; ")) }
+            );
+        }
     }
     ev(Event::Line("\nRollback finished."));
     Ok(())
@@ -376,7 +393,14 @@ pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn 
     let dir = abs.as_path();
     let m = Manifest::read(dir)?;
     let say = |ev: &mut dyn FnMut(Event), s: String| ev(Event::Line(&s));
-    say(ev, format!("Bundle for {} ({}): {} component(s), {} item(s), {} new term(s)", m.site, m.host, m.components, m.items, m.new_terms));
+    let mut extra = String::new();
+    if m.updates > 0 {
+        extra.push_str(&format!(", {} item(s) on the site updated", m.updates));
+    }
+    if m.media > 0 {
+        extra.push_str(&format!(", {} file(s) added to items on the site", m.media));
+    }
+    say(ev, format!("Bundle for {} ({}): {} component(s), {} item(s), {} new term(s){extra}", m.site, m.host, m.components, m.items, m.new_terms));
 
     // Every Workbench run, in order, for the "step n of N" count.
     let (terms, rest): (Vec<_>, Vec<_>) = m.steps.iter().partition(|s| s.name.starts_with("terms-"));
@@ -413,7 +437,8 @@ pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn 
             .collect();
         let marks = crate::fixity::mark(&configs);
         let watch: Vec<_> = marks.iter().map(|(_, log, len)| (log.clone(), *len)).collect();
-        let since = std::time::SystemTime::now();
+        // Some filesystems keep modification times to the second or two.
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
         let result = workbench(cfg, &dir.join(&step.config), &watch, ev);
         // What it created, also when it failed or was stopped: a rollback needs it most then.
         for c in created_by(step, &configs, &marks, since) {

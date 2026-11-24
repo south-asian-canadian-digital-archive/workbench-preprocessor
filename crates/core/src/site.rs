@@ -126,19 +126,58 @@ impl Site {
         Ok(r.status().is_success())
     }
 
+    /// How many media a node has (Islandora's "media of" listing).
+    pub fn media_count(&self, nid: &str) -> Result<usize> {
+        let url = format!("{}/node/{nid}/media?_format=json", self.host());
+        let r = self.get(&url)?;
+        let status = r.status();
+        if !status.is_success() {
+            bail!("{} answered {status} for {url}", self.host());
+        }
+        let v: Value = r.json().with_context(|| format!("{url} didn't return JSON"))?;
+        Ok(v.as_array().map_or(0, Vec::len))
+    }
+
     /// Deletes one term: an ingest's rollback, and the only change organise
     /// makes to a site itself (nodes are created and deleted by Workbench).
     /// Already gone counts as done.
-    pub fn delete_term(&self, tid: &str) -> Result<()> {
+    ///
+    /// Only when it's still the term the ingest made: `vocab` and `name`
+    /// must match, else it's left alone (Ok(false)).
+    pub fn delete_term(&self, tid: &str, vocab: &str, name: &str) -> Result<bool> {
         let (user, pass) = self.auth.as_ref().context("no credentials for this site")?;
         let url = format!("{}/taxonomy/term/{tid}?_format=json", self.host());
-        let r = self.client.delete(&url).basic_auth(user, Some(pass)).send().with_context(|| format!("DELETE {url}"))?;
-        let status = r.status();
-        if status.is_success() || status == StatusCode::NOT_FOUND {
-            Ok(())
-        } else {
-            bail!("{} answered {status}", self.host())
+        let r = self.get(&url)?;
+        if r.status() == StatusCode::NOT_FOUND {
+            return Ok(true); // already gone
         }
+        if !r.status().is_success() {
+            bail!("{} answered {} for {url}", self.host(), r.status());
+        }
+        let v: Value = r.json().with_context(|| format!("{url} didn't return JSON"))?;
+        let got_name = v["name"][0]["value"].as_str().unwrap_or("");
+        let got_vocab = v["vid"][0]["target_id"].as_str().unwrap_or("");
+        if got_name != name || got_vocab != vocab {
+            return Ok(false);
+        }
+        let mut delay = Duration::from_millis(500);
+        for attempt in 0..6 {
+            let r = self.client.delete(&url).basic_auth(user, Some(pass)).send();
+            match r {
+                Ok(r) if r.status().is_success() || r.status() == StatusCode::NOT_FOUND => return Ok(true),
+                Ok(r) if r.status() != StatusCode::TOO_MANY_REQUESTS && !r.status().is_server_error() => {
+                    bail!("{} answered {}", self.host(), r.status())
+                }
+                Ok(r) if attempt == 5 => bail!("{} answered {}", self.host(), r.status()),
+                Err(e) if attempt == 5 => return Err(e).with_context(|| format!("DELETE {url}")),
+                _ => {}
+            }
+            if !crate::progress::sleep(delay) {
+                bail!("cancelled");
+            }
+            delay = (delay * 2).min(Duration::from_secs(8));
+        }
+        unreachable!()
     }
 
     /// Logs in with the credentials file by fetching the current user.

@@ -78,6 +78,8 @@ pub fn main(cli: Cli) -> Result<()> {
             collection_title: cli.collection_title.clone(),
             offline: cli.offline,
             files_by_identifier: cli.files_by_identifier,
+            update_columns: Vec::new(),
+            replace_media: cli.replace_media,
         },
     )?;
     session.progress = true;
@@ -85,11 +87,28 @@ pub fn main(cli: Cli) -> Result<()> {
     println!("Checking against {} ({}); files from {}", site_name, site_cfg.host, session.files.root.display());
 
     let (_, first, _) = session.settle(&table, &[], &[]);
+    if let Some(list) = &cli.update {
+        let can = bundle::updatable_columns(&cfg, &table, &first);
+        let wanted: Vec<String> = list.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
+        session.opts.update_columns = if wanted.iter().any(|c| c == "all") {
+            can
+        } else {
+            let unknown: Vec<&String> = wanted.iter().filter(|c| !can.contains(c)).collect();
+            if !unknown.is_empty() {
+                bail!("--update: {} can't be updated - the sheet's updatable columns are: {}", unknown.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", "), can.join(", "));
+            }
+            wanted
+        };
+    }
     let mut accepted: Vec<Fix> = if cli.accept_suggestions {
-        first.findings.iter().filter(|f| !f.auto).filter_map(|f| f.fix.clone()).collect()
+        // Media for items already on the site is its own choice (--add-missing-media).
+        first.findings.iter().filter(|f| !f.auto && f.fix != Some(Fix::AddMedia)).filter_map(|f| f.fix.clone()).collect()
     } else {
         Vec::new()
     };
+    if cli.add_missing_media {
+        accepted.push(Fix::AddMedia);
+    }
     // Rows and files that don't pair up: left out (and listed in the bundle)
     // unless --keep-unpaired says to ingest them anyway.
     if !cli.keep_unpaired {
