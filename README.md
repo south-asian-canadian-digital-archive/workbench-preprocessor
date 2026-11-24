@@ -1,176 +1,114 @@
-# organise - SACDA ingest tool
+# organise - the SACDA ingest tool
 
-One spreadsheet in, a checked [Islandora Workbench](https://github.com/mjordan/islandora_workbench) bundle out.
+`organise` reads a SACDA spreadsheet and checks it against the archive site. Then it writes an [Islandora Workbench](https://github.com/mjordan/islandora_workbench) bundle and ingests it.
 
-```
-organise                       # interactive: pick a sheet and a site, review, write, ingest
-organise sheet.xlsx            # same, starting from that sheet (dev by default)
-organise sheet.csv --site test --plain   # no screen: print the report, write the bundle if clean
-organise ingest <bundle-dir>   # run a written bundle through Workbench (all --check runs first)
-organise doctor                # is this machine ready? can it reach and sign in to each site?
-```
+organise works only with the SACDA configuration (the `g/` folder). It is not a general Workbench tool.
+
+The full manual is in the [wiki](https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor/wiki). It describes every screen, key, option and file.
 
 ## Install
 
-macOS / Linux:
+The SACDA setup script installs organise, Islandora Workbench and the `g/` configuration folder. Your computer probably has them already. To check, open a terminal and type `organise doctor`.
+
+If the command is not found, run the setup script. Ask the SACDA admin for the credentials files.
+
+<details>
+<summary>How to run the setup script</summary>
+
+The setup script also updates an existing install. You can run it again at any time.
+
+**Windows** (PowerShell):
+
+```powershell
+$UpdateUrl = "https://sacda.ufv.ca/static/update.ps1"; irm $UpdateUrl | iex
+```
+
+**macOS / Linux** (Terminal):
+
+```bash
+curl -fsSL https://sacda.ufv.ca/static/update.sh | sh
+```
+
+The scripts are [update.ps1](https://sacda.ufv.ca/static/update.ps1) and [update.sh](https://sacda.ufv.ca/static/update.sh). Their source is in `scripts/` of the SACDA configuration repository (private).
+
+The script does these steps:
+
+1. It installs uv and Python.
+2. It downloads Islandora Workbench and the `g/` configuration folder.
+3. It installs `organise` and adds it to your PATH.
+4. It runs `organise doctor`.
+
+The credentials files (`credentials-*.yml`) are not in git. Get them from the SACDA admin and copy them into the `g/` folder. Then run `organise doctor` again. Each site that you use must show `ok`.
+
+To install or update only organise, run the release installer:
 
 ```bash
 curl -fsSL https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor/releases/latest/download/install.sh | sh
 ```
 
-Windows (PowerShell):
-
 ```powershell
 irm https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor/releases/latest/download/install.ps1 | iex
 ```
 
-The installer picks the right build, verifies it against `SHASUMS256.txt`, puts `organise` on PATH, finds the
-workbench `g/` folder (it holds `config/sacda.toml`) and remembers it, then runs `organise doctor`.
-Re-run it to update. From source: `cargo build --release`.
+More: [Install and update](https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor/wiki/Install-and-update).
 
-### The screen
+</details>
 
-- **Pick:** `u` pastes a Google Sheets link. It's downloaded straight away and added to a **Google Sheets**
-  section at the top of the list (marked "just pulled"), with the collection name, row count and identifier range
-  so batches of one fonds can be told apart. Links stay there between runs (`x` removes one); below them are the
-  spreadsheets in the current folder.
-- **Each sheet has its own files folder and file-name rule**, remembered between runs (`sheets.json` next to
-  organise's settings file): select it, `f` to set the folder (type it, or drag the folder into the window; the
-  panel shows how many files it holds - counted in the background; `f` on the review screen changes it for the
-  open sheet and re-reads it), `m` to switch file names between "the `file`
-  column, else `<identifier>.<ext>`" and "always `<identifier>.<ext>`" (SACDA staging; also
-  `--files-by-identifier`). Then Enter checks it (a link is downloaded fresh for the check).
-- **Part of a sheet:** `s` on a sheet opens a box for which rows to use, written like PDF pages with the sheet's
-  own row numbers: `12`, `12,15`, `-40` (up to 40), `100-` (100 to the end), `12-40`, or an identifier such as
-  `2024_19_1545` (it and everything under it). The rows of the picked items' collection and series always come
-  along. It's remembered per sheet and shown in the header ("only rows 12-40"); `--only` does the same on the
-  command line, and `s` works on the review screen too (even mid-check): the new rows are cut from the sheet already read and
-  re-checked with what's already fetched from the site (about a second), and the decisions already made carry over, following each row by its identifier, so rows added or removed in the
-  sheet don't move a fix onto another item. Collections and series already on the site are added to, and items already there are left out
-  (identifiers are unique), so overlapping or repeated subsets just ingest what's new.
-- **Ingesting** (`i`, `organise ingest`, `--ingest`) opens its own screen: Workbench's output (the items secondary
-  task's too) in a pane you can scroll while it runs (wheel, ↑↓, PgUp/PgDn; End follows again), and a progress bar
-  pinned to the bottom row: step n of N, records done out of the step's CSV rows, time so far and roughly how long
-  is left. `q` stops it (after a y/n: what Workbench already created stays, rollback files are in `g/rollback/`).
-  - When it finishes: a stats panel - time, created, skipped and failed per step, totals, checksums, and links to
-    the collections (`o` opens one). The new nodes are listed in `g/logs/organise/<bundle>-new-nodes.csv`.
-  - **Checksums:** Workbench checks every uploaded file against Drupal (`fixity_algorithm: md5` in the items
-    config) but only writes it to its own log; after each step organise reads the new part of the logs and adds a
-    row per file (identifier, file, algorithm, local and Drupal checksum, match/MISMATCH, when) to
-    `g/logs/organise/<bundle>-checksums.csv`. A mismatch is an error line and counts against the ingest.
-  - When Workbench fails: an error panel with the error and the traceback; `c` copies a debug report (versions,
-    site, the failing step, traceback, every error line, the step's config with any username/password blanked,
-    its CSV's header and first rows) to paste into an issue or an LLM, and saves it as
-    `<bundle>-error-report.txt`.
-  - Closing leaves a summary in the terminal; everything the screen showed is in `<bundle>-output.log`, and each
-    step's own Workbench log in `<bundle>-<step>.log` (all in `g/logs/organise/`). Without a terminal (a pipe, a
-    log) it prints plain lines instead.
-- **Temporary files:** `c` on the first screen lists what organise keeps in its cache folder (downloaded Google
-  Sheets, the id.loc.gov lookup cache) with sizes, and deletes them on Enter. Nothing is cleaned automatically.
-  Bundles, logs, rollback files and the id map are never touched - they record what was ingested.
-- **Checks run in the background.** Pulling a sheet and its first check show a progress dialog (step, a bar when
-  it knows how far along it is, time so far; Esc or its button cancels). Re-checks stay in the status line, so you
-  can keep reading and deciding findings while one runs.
-- **Rows and files that don't pair up are decisions too**, each listing exactly which rows (row number and
-  identifier) or files: rows with no file, rows naming a file the folder doesn't have, and files no row uses.
-  `y` leaves them out of the ingest and lists them in the bundle (`skipped-rows.csv` - the full sheet rows plus why
-  - or `unmatched-files.csv`) to sort out later; `n` ingests them anyway (without media / without the missing file /
-  each unused file as its own item titled by its identifier, offered when every such file is named after an
-  identifier whose parent is known). `--plain` leaves them out unless `--keep-unpaired`.
-- **Each suggestion is a decision:** `y` uses the fix, `n` keeps the sheet's value (for a term: add it as a new
-  term). In a vocabulary listed in Workbench's `protected_vocabularies` (`config/templates/common.yml`) there's no
-  `n`: the pane says why, and the value has to be the existing term or fixed in the sheet. The detail pane says what the sheet has,
-  which existing term it's close to (with its term number and a link to it on the site), and why: a spelling
-  mistake (n letters), singular/plural, accents/case, word order. `[?]` = not decided yet, `[✓]` on, `[–]` off.
-  A choice on a term suggestion applies to every row with the same value and the same suggested term (52 rows of
-  "Masjid" -> "Masjids" is one keypress). `a` uses every undecided suggestion.
-- **Nothing is re-checked until you press `c`.** Write (`w`) and write+ingest (`i`) only appear once the last
-  check covers every decision, nothing is undecided and there are no errors. `r` re-reads the sheet and the site
-  (after editing the sheet, or ingesting thesaurus terms).
-- **Links:** `o` (or the link line under a finding) opens the LCSH/LC heading, the site term, or an id.loc.gov
-  search in the browser. On the New terms tab, each term with an authority link has a box: Space leaves that link
-  out of the created term, `L` toggles all of them.
-- **Mouse:** click sheets (again to open), sites, tabs, findings, their `[?]` box, the `y`/`n`/`o` buttons and
-  the footer chips; the wheel scrolls. Mouse capture means the terminal's own text selection needs Shift (Option
-  in some terminals) held while dragging.
+## Ingest a spreadsheet, start to finish
 
-## What it does
+Do these steps for each batch. Ingest into **test** first. Ingest into **prod** only when the test result is correct.
 
-1. **Reads the sheet** - CSV, TSV, Excel, ODS or a Google Sheets link (shared as "anyone with the link"). Cells are
-   trimmed, `#VALUE!` blanked, non-breaking spaces and mojibake repaired. The archivist layout is read as-is:
-   - headers map to fields: the `[aliases]` in `sacda.toml` (`itemTitle` -> `title`, `date` -> `field_edtf_date`,
-     `creator` -> `field_linked_agent`, `lcsh_terms` -> `field_subject`, `subjectPersonal` -> `field_subjects_name`...),
-     and otherwise any header that is a field without `field_`, in camelCase, or the field's label
-     (`extent`, `custodialHistory`, `Subject (Topical)`)
-   - working columns (`notes`, `Cataloguer's Notes`, `SB`, `datetype`, `levelOfDescription`, blank headers) are left
-     out - `[sheet] ignore_columns`
-   - `lcsh_identifier` pairs value-for-value with `lcsh_terms`: the IDs are used (heading and link come from
-     id.loc.gov) when the counts match, the headings otherwise (with a warning)
-   - `;` between values in term cells is read like `|`; CA place keys (`vancouver_bc`) are read as names (`Vancouver`)
-   - `fondsCollectionTitle` titles a collection that's neither in the sheet nor on the site
-   - access files are found by `accessIdentifier` (`2024_19_118_001.tif` anywhere under `access/`), or by a `file`
-     column
-2. **Builds the tree from identifiers.** `2024_19` is a collection, `2024_19_01` a component inside it,
-   `2024_19_01_02` a component inside that (any depth), and the deepest identifiers are items.
-   - A row ending `_00`/`_000`, or whose identifier other rows extend, describes that container.
-   - Containers no row describes are created anyway, titled from the items' `fileTitle`.
-   - Levels: the root is `Collection`, a component holding items is `File`, anything between is `Series`
-     (a `field_archival_level` column overrides).
-   - Several rows with one item identifier are one item with several files: a `Compound Object` with a part per file.
-   - Item models come from the file's media type: Image, Audio, Video, Digital Document, Binary.
-   - A collection not in the sheet is looked up on the site and added to; if it isn't there either, it needs a
-     title (`t` on the screen, or `--collection-title`).
-3. **Prechecks** - always on, against the live site through JSON:API:
-   - site reachable, JSON:API on (with how to turn it on), login works (403 flood-lock explained), site converted
-     to archival_component collections
-   - columns: unknown columns get a "did you mean" from `suggest.rs` (case, `_`, missing `field_`, typos, plurals)
-   - structure: identifiers valid, titles present, nothing already on the site
-   - files: rows and files pair up (see above), in the access folder (`access/` next to the sheet, or the one chosen with `f` / `--access-dir`), extension accepted by the site's media types,
-     no derivatives
-   - dates: EDTF, with fixes for what people actually type (`05/1978`, `1970s`, `c. 1975`, `1975-1979`, `May 1979`)
-   - terms: every value matched to the site's vocabularies (by name, or by authority URI); near misses suggested;
-     new terms get their LCSH / LC name link (exact heading lookup, or the heading for an `sh...`/`n...` identifier
-     in the sheet); vocabularies in Workbench's `protected_vocabularies` are never added to. New terms without a
-     link are a note, not a warning - most SACDA terms have none
-4. **Fixes.** Safe ones (EDTF, capitalisation, identifier -> heading) are on; guesses (typos) are offered and off
-   until accepted (`y` / `a` on the screen, `--accept-suggestions`). Fixes change the bundle, never the sheet.
-   Failed id.loc.gov lookups (throttling) aren't retried within a run, so a re-check takes about a second;
-   `r` tries them again.
-5. **Writes the bundle** (`ingest-<collection>-<site>/` next to the sheet) from `g/config/templates/`:
-   `terms-<vocab>.csv` + config per vocabulary with new terms, `components.csv` (nested archival_components,
-   parents first) with `items.csv` as its secondary task, `bundle.toml` (steps in order) and `precheck-report.txt`.
-6. **Ingests** (optional): Workbench `--check` on every step, then the terms jobs, then components + items.
+1. **Prepare the files.** Put the access files in a folder named `access` next to the spreadsheet. You can also use a different folder and select it in step 4.
+2. **Open organise.** Open a terminal and type `organise`. The pick screen opens.
+3. **Select the sheet.**
+   - For a file, use ↑ ↓ to select it.
+   - For a Google Sheet, press `u` and paste the link. The sheet must be shared as "anyone with the link".
+4. **Select the files folder.** Press `f` and type the folder path, or drag the folder into the window. Press Enter. The panel shows how many files the folder holds.
+5. **Select the site.** Use ← → to select `test` or `prod`.
+6. **Start the check.** Press Enter. organise reads the sheet and compares it with the site. This can take some minutes the first time.
+7. **Read the findings.** The review screen lists each problem.
+   - **Error:** change the value in the spreadsheet. Save the sheet, then press `r` to read it again.
+   - **Suggestion:** press `y` to use the fix, or `n` to keep the value. Press `a` to use all suggestions.
+   - **Rows without files, or files without rows:** press `y` to skip them, or `n` to ingest them.
+   - Press `c` to check again after your decisions.
+   - Press `Tab` to see the new terms and the collection tree.
+8. **Write and ingest.** When no problems remain, the footer shows `w` and `i`. Press `i` to write the bundle and ingest it. For prod, type the site name in full.
+9. **Wait for the ingest.** The ingest screen shows Workbench's output and a progress bar. Do not close the window. To stop the ingest, press `q`, then `y`.
+10. **Look at the result.** When the ingest ends, a stats panel shows what organise created. Press `o` to open the collection on the site.
 
-## Configuration (in g/)
+If the ingest fails, an error panel opens. Press `c` to copy a debug report. Send the report to the SACDA admin.
 
-- `config/sacda.toml` - sites (dev `isle.dvnl.work`, test `sacda-test.ufv.ca`, prod `sacda.ufv.ca`, which asks
-  for confirmation), ingest defaults, and per-field rules: which vocabulary a new term goes to, relators,
-  authorities.
-- `config/templates/common.yml` - also holds Workbench's `protected_vocabularies`. organise reads the same list:
-  a misspelt value in one of those can only be fixed in the sheet, not kept as a new term.
-- `config/schema.toml` - generated from the site's `config/sync` by `scripts/gen_schema.py`: fields per content type,
-  required flags, target vocabularies, media types and their extensions.
-- `config/templates/*.yml` - the Workbench configs organise renders.
-- Examples covering each scenario: `g/data/examples/` (`make_examples.py` rebuilds them).
+### Keys on the screen
 
-## Code map
+| Screen | Keys |
+|---|---|
+| Pick | ↑ ↓ sheet · ← → site · Enter check · `u` add a Google Sheets link · `f` files folder · `m` file names · `s` rows · `c` delete temporary files · `q` quit |
+| Review | `y` use the fix · `n` keep the value · `a` use all · `o` open the link · `c` check again · `r` read the sheet again · `s` rows · `f` files folder · `w` write · `i` write and ingest · `Tab` next view · Esc back |
+| Ingest | ↑ ↓ PgUp PgDn scroll · End follow the output · `q` stop · after the ingest: `v` stats or error · `o` open the collection · `c` copy the error report |
 
-A Cargo workspace, so a change to the screen doesn't rebuild the checks:
+The footer of each screen shows the keys you can use now. You can also use the mouse.
 
-| Crate | | |
-|---|---|---|
-| `crates/core` | `sacda-core` (`use sacda::...`) | Everything that reads or changes data, no UI: `config` · `input` (tables, Google Sheets, cell clean-up) · `source` (load/clean) · `tree` (identifiers -> tree, models) · `precheck/` (checks, vocab, fixes, `Session::settle`) · `authority/` (LC lookups, disk cache) · `suggest` · `edtf` · `site` (read-only JSON:API) · `bundle` · `run` · `doctor` |
-| `crates/tui` | `sacda-tui` | The interactive screen; only calls into `sacda-core` |
-| `.` | `workbench-preprocessor` | The `organise` binary: CLI + plain mode |
+## Commands
 
-Tests: `cargo test --workspace` (live LC test: `cargo test --workspace -- --ignored`).
+```
+organise                         open the screen
+organise sheet.xlsx --site test  open the screen with this sheet
+organise doctor                  check this computer and each site
+organise ingest <bundle-folder>  ingest a bundle that organise wrote before
+```
 
----
+`organise --help` lists all options. The [Command line](https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor/wiki/Command-line) page describes them.
 
-### License
+## For developers
 
-MIT — see [LICENSE](LICENSE) if present in the repo.
+organise is a Rust workspace. `crates/core` holds the checks and the bundle writer. `crates/tui` holds the screen. The root package is the `organise` binary.
 
-### Releases
+- Build: `cargo build --release`
+- Test: `cargo test --workspace`
+- Release: Actions → **Draft release (multi-platform)** → Run workflow
 
-Actions → **Draft release (multi-platform)** → Run workflow. It runs clippy and the tests, builds Linux, Windows and both macOS targets with checksums, and leaves a draft release to publish.
+More: [For developers](https://github.com/south-asian-canadian-digital-archive/workbench-preprocessor/wiki/For-developers).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
