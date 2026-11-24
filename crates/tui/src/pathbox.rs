@@ -43,7 +43,8 @@ pub fn complete(typed: &str, base: &Path) -> Completion {
         })
         .unwrap_or_default();
     names.sort_by_key(|n| n.to_lowercase());
-    let sep = if cfg!(windows) && head.contains('\\') { '\\' } else { '/' };
+    // Go on with the separator the path was typed with (Windows takes both).
+    let sep = head.chars().last().filter(|c| is_sep(*c)).unwrap_or('/');
     match names.len() {
         0 => Completion { text: typed.to_string(), matches: vec![] },
         1 => Completion { text: format!("{head}{}{sep}", names[0]), matches: vec![] },
