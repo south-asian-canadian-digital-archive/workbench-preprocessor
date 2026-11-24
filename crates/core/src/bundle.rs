@@ -81,6 +81,19 @@ fn yaml_str(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+/// A file's path for the CSV's `file` column. Windows paths get `/`:
+/// Workbench sends the path as the upload's `filename*`, and Drupal keeps
+/// what's after the last `/` - with `\` it kept the whole path as the file's
+/// name ("C:\Users\...\photo.tif"), which broke derivatives. Python on
+/// Windows opens `C:/Users/...` the same.
+fn csv_path(p: &Path) -> String {
+    slashes(&p.to_string_lossy(), cfg!(windows))
+}
+
+fn slashes(s: &str, windows: bool) -> String {
+    if windows { s.replace('\\', "/") } else { s.to_string() }
+}
+
 fn path_str(p: &Path) -> String {
     yaml_str(&p.to_string_lossy())
 }
@@ -316,7 +329,7 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
             n.files[i]
                 .path
                 .as_ref()
-                .map(|p| p.to_string_lossy().to_string())
+                .map(|p| csv_path(p))
                 .unwrap_or_default()
         };
 
@@ -390,7 +403,7 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
                 id.clone(),
                 id.clone(),
                 model,
-                path.to_string_lossy().to_string(),
+                csv_path(path),
                 String::new(),
             ];
             rec.extend(std::iter::repeat_n(String::new(), extra_cols));
@@ -636,4 +649,17 @@ pub fn report_text(report: &Report, applied: &[Fix], table: &Table) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_file_paths_use_forward_slashes() {
+        assert_eq!(slashes(r"C:\Users\a\access\photo 1.tif", true), "C:/Users/a/access/photo 1.tif");
+        assert_eq!(slashes(r"\\server\share\x.jpg", true), "//server/share/x.jpg");
+        // Elsewhere a backslash is part of the name: left alone.
+        assert_eq!(slashes(r"/a/odd\name.jpg", false), r"/a/odd\name.jpg");
+    }
 }
