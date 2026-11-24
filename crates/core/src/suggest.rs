@@ -221,6 +221,25 @@ pub fn headings_agree(typed: &str, authority: &str) -> bool {
     bag(typed) == bag(authority)
 }
 
+/// The same heading, not just a close one: equal ignoring case, accents and
+/// punctuation, without or with its parenthetical qualifier, or the same
+/// words in another order (`Portraits, Group`).
+pub fn same_heading(typed: &str, authority: &str) -> bool {
+    let a = letters(typed);
+    if a.is_empty() {
+        return false;
+    }
+    if a == letters(authority) || a == letters(authority.split(" (").next().unwrap_or(authority)) {
+        return true;
+    }
+    let bag = |s: &str| {
+        let mut w: Vec<String> = s.split(|c: char| c.is_whitespace() || c == ',').map(letters).filter(|w| !w.is_empty()).collect();
+        w.sort();
+        w
+    };
+    bag(typed) == bag(authority)
+}
+
 /// In plain words, why `typed` looks like `existing` - shown next to a
 /// suggestion so it's clear whether it's a typo fix or a different term.
 pub fn why(typed: &str, existing: &str) -> String {
@@ -246,6 +265,15 @@ pub fn why(typed: &str, existing: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_heading_is_exact_but_not_fuzzy() {
+        assert!(same_heading("Holi", "Holī (Hindu festival)"));
+        assert!(same_heading("Group portraits", "Portraits, Group"));
+        assert!(same_heading("ʻĪd al-Fiṭr", "Id al-Fitr"));
+        assert!(!same_heading("Cars", "Cats"));
+        assert!(headings_agree("Cars", "Cats"));
+    }
 
     #[test]
     fn same_letters_ignores_spacing_and_punctuation() {

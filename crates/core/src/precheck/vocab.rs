@@ -209,8 +209,11 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
             // Authority IDs given beside this cell's headings, and which got used.
             let row_ids: Vec<String> = table.identifiers.get(&(row.line, col.clone())).cloned().unwrap_or_default();
             let mut ids_used = vec![false; row_ids.len()];
+            // Which ID (and whether exactly) goes with each written heading: one
+            // ID per heading and one heading per ID; exact matches first.
+            let id_for = assign_ids(s, rule.authority.as_deref(), &row_ids, &cell, &subdelim, &def);
 
-            for raw in cell.split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+            for (idx, raw) in cell.split(subdelim.as_str()).map(str::trim).filter(|v| !v.is_empty()).enumerate() {
                 let mut p = parse_value(raw, &def);
                 let relator = p.relator.clone().or_else(|| rule.relator.clone());
 
@@ -246,6 +249,9 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                 // An authority identifier in the sheet: look up its heading.
                 let auth = rule.authority.as_deref().and_then(authority::by_name);
                 let mut link: Option<Resolved> = None;
+                // Only a link that names exactly this heading may map it to an
+                // existing term that holds the link under another name.
+                let mut link_exact = true;
                 if let Some(a) = auth.as_deref() {
                     if a.is_identifier(&p.name) {
                         // An ID written as the value itself: its heading is the term.
@@ -279,14 +285,12 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                                 continue;
                             }
                         }
-                    } else if let Some(j) = row_ids.iter().position(|rid| {
-                        a.is_identifier(rid)
-                            && s.authorities.resolve(a, rid).ok().flatten().is_some_and(|r| suggest::headings_agree(&p.name, &r.label))
-                    }) {
-                        // A written heading with an ID beside it (any position) that names
-                        // the same thing: the heading stays as written, the ID gives its link.
+                    } else if let Some((j, exact)) = id_for.get(idx).copied().flatten() {
+                        // A written heading with an ID in the row that names the same
+                        // thing: the heading stays as written, the ID gives its link.
                         if let Ok(Some(res)) = s.authorities.resolve(a, &row_ids[j]) {
                             link = Some(res);
+                            link_exact = exact;
                         }
                         ids_used[j] = true;
                     }
@@ -320,7 +324,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                             (hit, close)
                         }
                     };
-                    let by_uri = link.as_ref().and_then(|l| s.term_with_uri(vid, &l.uri, same_uri));
+                    let by_uri = link.as_ref().filter(|_| link_exact).and_then(|l| s.term_with_uri(vid, &l.uri, same_uri));
                     s.term_memo.insert(memo_key, (hit.clone(), close.clone()));
                     if let Some(name) = hit.or(by_uri) {
                         found = Some((vid.clone(), name));
@@ -381,10 +385,7 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
                     if let Some(a) = auth.as_deref() {
                         match s.authorities.resolve(a, &p.name) {
                             Ok(Some(res)) => {
-                                if res.label != p.name {
-                                    changed = true;
-                                    p.name = res.label.clone();
-                                }
+                                // The heading stays as written; the authority gives its link.
                                 link = Some(res);
                             }
                             Ok(None) => {}
@@ -462,21 +463,23 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
 
             // IDs that named none of the written headings: not used (a typo can
             // land on another real heading). The headings are ingested as written.
-            let unused: Vec<String> = row_ids
-                .iter()
-                .zip(&ids_used)
-                .filter(|(_, u)| !**u)
-                .map(|(rid, _)| {
-                    let label = rule
-                        .authority
-                        .as_deref()
-                        .and_then(authority::by_name)
-                        .and_then(|a| s.authorities.resolve(a.as_ref(), rid).ok().flatten())
-                        .map(|r| format!(" (\"{}\")", r.label))
-                        .unwrap_or_else(|| " (not found at id.loc.gov)".into());
-                    format!("{rid}{label}")
-                })
-                .collect();
+            let cell_auth = rule.authority.as_deref().and_then(authority::by_name);
+            let unused: Vec<String> = match cell_auth.as_deref() {
+                None => Vec::new(),
+                Some(a) => row_ids
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| !ids_used[*j] && !id_for.iter().flatten().any(|(k, _)| k == j))
+                    .map(|(_, rid)| {
+                        let label = match s.authorities.resolve(a, rid) {
+                            Ok(Some(r)) => format!(" (\"{}\")", r.label),
+                            Ok(None) => " (not found at id.loc.gov)".into(),
+                            Err(_) => " (id.loc.gov didn't answer)".into(),
+                        };
+                        format!("{rid}{label}")
+                    })
+                    .collect(),
+            };
             if !unused.is_empty() {
                 s.stick(
                     Finding::new(
@@ -559,6 +562,38 @@ pub fn check(s: &mut Session, table: &Table, report: &mut Report) {
         }
     }
     report.new_terms = new_terms;
+}
+
+/// For each written heading of a cell, the ID of its row that names it (and
+/// whether exactly: same letters or the same words). One ID per heading and
+/// one heading per ID; exact matches are paired first, close ones after.
+fn assign_ids(s: &mut Session, authority: Option<&str>, ids: &[String], cell: &str, subdelim: &str, def: &crate::config::FieldDef) -> Vec<Option<(usize, bool)>> {
+    let headings: Vec<String> = cell.split(subdelim).map(str::trim).filter(|v| !v.is_empty()).map(|v| parse_value(v, def).name).collect();
+    let mut out = vec![None; headings.len()];
+    let Some(a) = authority.and_then(authority::by_name) else { return out };
+    if ids.is_empty() {
+        return out;
+    }
+    let labels: Vec<Option<String>> = ids
+        .iter()
+        .map(|id| if a.is_identifier(id) { s.authorities.resolve(a.as_ref(), id).ok().flatten().map(|r| r.label) } else { None })
+        .collect();
+    let mut taken = vec![false; ids.len()];
+    for exact in [true, false] {
+        for (i, h) in headings.iter().enumerate() {
+            if out[i].is_some() || a.is_identifier(h) {
+                continue;
+            }
+            let hit = labels.iter().enumerate().find(|(j, l)| {
+                !taken[*j] && l.as_deref().is_some_and(|l| if exact { suggest::same_heading(h, l) } else { suggest::headings_agree(h, l) })
+            });
+            if let Some((j, _)) = hit {
+                taken[j] = true;
+                out[i] = Some((j, exact));
+            }
+        }
+    }
+    out
 }
 
 fn same_uri(a: &str, b: &str) -> bool {
