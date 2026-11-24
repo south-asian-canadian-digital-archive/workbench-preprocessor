@@ -20,6 +20,9 @@ pub enum Event<'a> {
     Line(&'a str),
     /// Workbench finished one record: created, skipped as already there, or failed.
     Record,
+    /// Workbench waited this many seconds because the site answered slowly
+    /// (its `adaptive_pause`). It says so only in its log, read as it runs.
+    Paused { seconds: u64 },
     /// A run's file checksums were saved: how many matched Drupal's, how many didn't.
     Checksums { matched: usize, mismatched: usize, algorithm: &'a str, file: &'a Path },
 }
@@ -54,7 +57,63 @@ fn rows_in(dir: &Path, step: &Step) -> usize {
 /// stderr, in the order they land) to `line`. Returns whether it exited 0.
 /// If the job this thread works for is cancelled (the ingest screen's stop),
 /// Workbench is killed and this returns an error.
-fn spawn_workbench(cfg: &Config, config: &Path, check: bool, line: &mut dyn FnMut(String)) -> Result<bool> {
+/// What a Workbench run gives back as it goes.
+enum Out {
+    Line(String),
+    Paused(u64),
+}
+
+/// "HTTP requests paused for 3 seconds because ..." in a Workbench log.
+fn pause_secs(line: &str) -> Option<u64> {
+    const AT: &str = "HTTP requests paused for ";
+    line[line.find(AT)? + AT.len()..].split_whitespace().next()?.parse().ok()
+}
+
+/// Follows Workbench logs from where they were when the run started, for
+/// what it writes only there (its adaptive pauses).
+struct LogTail {
+    files: Vec<(std::path::PathBuf, u64)>,
+    last: std::time::Instant,
+}
+
+impl LogTail {
+    fn new(files: &[(std::path::PathBuf, u64)]) -> Self {
+        Self { files: files.to_vec(), last: std::time::Instant::now() }
+    }
+
+    /// Pauses logged since the last look (at most every half second unless `now`).
+    fn poll(&mut self, now: bool) -> Vec<u64> {
+        use std::io::{Read, Seek, SeekFrom};
+        if !now && self.last.elapsed() < std::time::Duration::from_millis(500) {
+            return vec![];
+        }
+        self.last = std::time::Instant::now();
+        let mut out = Vec::new();
+        for (path, pos) in &mut self.files {
+            let Ok(mut f) = std::fs::File::open(&*path) else { continue };
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            if len < *pos {
+                *pos = 0; // started again
+            }
+            if len == *pos || f.seek(SeekFrom::Start(*pos)).is_err() {
+                continue;
+            }
+            let mut buf = Vec::new();
+            if f.take(len - *pos).read_to_end(&mut buf).is_err() {
+                continue;
+            }
+            // Whole lines only: the rest is read next time.
+            let end = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+            *pos += end as u64;
+            out.extend(String::from_utf8_lossy(&buf[..end]).lines().filter_map(pause_secs));
+        }
+        out
+    }
+}
+
+/// Run Workbench on `config`, passing on its output line by line and the
+/// pauses in `watch` (its log files, from these offsets).
+fn spawn_workbench(cfg: &Config, config: &Path, check: bool, watch: &[(std::path::PathBuf, u64)], out: &mut dyn FnMut(Out)) -> Result<bool> {
     use std::io::{BufRead, BufReader};
     use std::sync::mpsc::RecvTimeoutError;
     let root = cfg.workbench_root();
@@ -121,11 +180,15 @@ fn spawn_workbench(cfg: &Config, config: &Path, check: bool, line: &mut dyn FnMu
         pumps.push(pump(Box::new(err), tx.clone()));
     }
     drop(tx);
+    let mut tail = LogTail::new(watch);
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(200)) {
-            Ok(l) => line(l),
+            Ok(l) => out(Out::Line(l)),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
+        }
+        for s in tail.poll(false) {
+            out(Out::Paused(s));
         }
         if crate::progress::cancelled_here() {
             kill_tree(&mut child);
@@ -134,6 +197,9 @@ fn spawn_workbench(cfg: &Config, config: &Path, check: bool, line: &mut dyn FnMu
     }
     for p in pumps {
         let _ = p.join();
+    }
+    for s in tail.poll(true) {
+        out(Out::Paused(s));
     }
     Ok(child.wait()?.success())
 }
@@ -172,15 +238,21 @@ fn is_error_line(line: &str) -> bool {
 
 /// A Workbench run, streamed. Workbench exits 0 even when a node or media
 /// fails, so its `ERROR` lines are counted and returned too.
-fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(bool, Vec<String>)> {
+fn workbench(cfg: &Config, config: &Path, watch: &[(std::path::PathBuf, u64)], ev: &mut dyn FnMut(Event)) -> Result<(bool, Vec<String>)> {
     let mut errors = Vec::new();
-    let ok = spawn_workbench(cfg, config, false, &mut |line| {
-        ev(Event::Line(&line));
-        if is_record(&line) {
-            ev(Event::Record);
+    let ok = spawn_workbench(cfg, config, false, watch, &mut |out| match out {
+        Out::Line(line) => {
+            ev(Event::Line(&line));
+            if is_record(&line) {
+                ev(Event::Record);
+            }
+            if is_error_line(&line) {
+                errors.push(line);
+            }
         }
-        if is_error_line(&line) {
-            errors.push(line);
+        Out::Paused(seconds) => {
+            ev(Event::Line(&format!("(Workbench paused {seconds}s: the site answered slowly - adaptive_pause)")));
+            ev(Event::Paused { seconds });
         }
     })?;
     Ok((ok, errors))
@@ -191,11 +263,13 @@ fn workbench(cfg: &Config, config: &Path, ev: &mut dyn FnMut(Event)) -> Result<(
 fn workbench_check(cfg: &Config, config: &Path) -> Result<(bool, String)> {
     let mut text = String::new();
     let mut failed = false;
-    let ok = spawn_workbench(cfg, config, true, &mut |line| {
-        let l = line.trim_start();
-        failed |= l.starts_with("Error:") || l.starts_with("ERROR") || l.contains("Traceback");
-        text.push_str(&line);
-        text.push('\n');
+    let ok = spawn_workbench(cfg, config, true, &[], &mut |out| {
+        if let Out::Line(line) = out {
+            let l = line.trim_start();
+            failed |= l.starts_with("Error:") || l.starts_with("ERROR") || l.contains("Traceback");
+            text.push_str(&line);
+            text.push('\n');
+        }
     })?;
     Ok((ok && !failed, text))
 }
@@ -251,7 +325,8 @@ pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn 
             .map(|c| dir.join(c))
             .collect();
         let marks = crate::fixity::mark(&configs);
-        let (ok, mut errors) = workbench(cfg, &dir.join(&step.config), ev)?;
+        let watch: Vec<_> = marks.iter().map(|(_, log, len)| (log.clone(), *len)).collect();
+        let (ok, mut errors) = workbench(cfg, &dir.join(&step.config), &watch, ev)?;
         let sums = crate::fixity::collect(dir, &marks);
         if !sums.is_empty() {
             let bundle = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".into());
@@ -338,6 +413,29 @@ fn check_step(cfg: &Config, dir: &Path, config: &str, name: &str, ev: &mut dyn F
 }
 
 #[cfg(all(test, unix))]
+mod pause_tests {
+    use super::*;
+
+    #[test]
+    fn reads_pauses_from_the_log_as_it_grows() {
+        let t = tempfile::tempdir().unwrap();
+        let log = t.path().join("wb.log");
+        std::fs::write(&log, "24-Nov-26 10:50:24 - INFO - HTTP requests paused for 3 seconds because request in next log entry exceeded adaptive threshold of 2.\n").unwrap();
+        // Only what's written after the run starts counts.
+        let mut tail = LogTail::new(&[(log.clone(), std::fs::metadata(&log).unwrap().len())]);
+        assert!(tail.poll(true).is_empty());
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        write!(f, "x - INFO - Node created\nx - INFO - HTTP requests paused for 5 seconds because ...\nx - INFO - HTTP requests paused for 3 sec").unwrap();
+        assert_eq!(tail.poll(true), vec![5]);
+        // The half-written line is read once it's whole.
+        writeln!(f, "onds because ...").unwrap();
+        assert_eq!(tail.poll(true), vec![3]);
+        assert_eq!(pause_secs("nothing here"), None);
+    }
+}
+
+#[cfg(test)]
 mod kill_tests {
     use super::*;
 

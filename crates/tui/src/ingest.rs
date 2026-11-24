@@ -26,6 +26,7 @@ enum Msg {
     Stage { label: String, index: usize, of: usize, total: usize, checking: bool },
     Line(String),
     Record,
+    Paused(u64),
     Checksums { matched: usize, mismatched: usize, algorithm: String, file: PathBuf },
     Done(Result<(), String>),
 }
@@ -51,6 +52,7 @@ pub fn ingest(cfg: &Config, dir: &Path, check_only: bool) -> anyhow::Result<()> 
                 }
                 Event::Line(l) => send(Msg::Line(l.to_string())),
                 Event::Record => send(Msg::Record),
+                Event::Paused { seconds } => send(Msg::Paused(seconds)),
                 Event::Checksums { matched, mismatched, algorithm, file } => {
                     send(Msg::Checksums { matched, mismatched, algorithm: algorithm.to_string(), file: file.to_path_buf() })
                 }
@@ -218,6 +220,12 @@ struct Screen {
     show_stats: bool,
     /// File checksums: (matched, mismatched, algorithm, where they're saved).
     checksums: Option<(usize, usize, String, PathBuf)>,
+    /// When the step's last record came through (None: none yet this step).
+    last_record: Option<Instant>,
+    /// Workbench's adaptive pauses: how many, how long in all, and the last one.
+    pauses: usize,
+    paused_secs: u64,
+    last_pause: Option<Instant>,
 }
 
 const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -236,6 +244,10 @@ impl Screen {
             collections: sacda::bundle::Manifest::read(dir).map(|m| m.collections).unwrap_or_default(),
             show_stats: false,
             checksums: None,
+            last_record: None,
+            pauses: 0,
+            paused_secs: 0,
+            last_pause: None,
             bundle: dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "bundle".into()),
             lines: Vec::new(),
             back: 0,
@@ -339,6 +351,7 @@ impl Screen {
     fn take(&mut self, m: Msg) {
         match m {
             Msg::Stage { label, index, of, total, checking } => {
+                self.last_record = None;
                 self.done_records = 0;
                 self.stage_from = self.lines.len();
                 self.close_step();
@@ -373,7 +386,15 @@ impl Screen {
                 }
                 self.lines.push(clean(&l));
             }
-            Msg::Record => self.done_records += 1,
+            Msg::Record => {
+                self.done_records += 1;
+                self.last_record = Some(Instant::now());
+            }
+            Msg::Paused(s) => {
+                self.pauses += 1;
+                self.paused_secs += s;
+                self.last_pause = Some(Instant::now());
+            }
             Msg::Checksums { matched, mismatched, algorithm, file } => {
                 let (m, b) = self.checksums.as_ref().map(|c| (c.0, c.1)).unwrap_or((0, 0));
                 self.checksums = Some((m + matched, b + mismatched, algorithm, file));
@@ -454,8 +475,8 @@ impl Screen {
             (None, Some(s)) if !s.checking && s.total > 0 => {
                 let pos = self.done_records.min(s.total);
                 let el = s.started.elapsed();
-                let eta = if pos > 0 { format!(", about {} left", fmt_dur(el.mul_f64((s.total - pos) as f64 / pos as f64))) } else { String::new() };
-                let label = format!("{tick} Step {}/{}  {}  {pos}/{}  {}{eta}  (total {total})", s.index, s.of, s.label, s.total, fmt_dur(el));
+                let eta = eta_text(s.started, self.last_record, pos, s.total);
+                let label = format!("{tick} Step {}/{}  {}  {pos}/{}  {}{eta}{}  (total {total})", s.index, s.of, s.label, s.total, fmt_dur(el), self.pause_note());
                 f.render_widget(Paragraph::new(progress_line(&label, pos as f64 / s.total as f64, bar.width)), bar);
             }
             (None, Some(s)) => {
@@ -514,6 +535,17 @@ impl Screen {
     }
 
     /// The numbers: per step, then totals and links.
+    /// On the bar: a pause just now, or how many there were.
+    fn pause_note(&self) -> String {
+        match self.last_pause {
+            Some(t) if t.elapsed() < Duration::from_secs(20) => {
+                format!("  · site slow: Workbench paused ({} so far, {}s)", self.pauses, self.paused_secs)
+            }
+            _ if self.pauses > 0 => format!("  · {} pause(s)", self.pauses),
+            _ => String::new(),
+        }
+    }
+
     fn stats_lines(&self) -> Vec<String> {
         let mut out = Vec::new();
         let runs: Vec<_> = self.stats.iter().filter(|s| !s.checking).collect();
@@ -541,6 +573,12 @@ impl Screen {
             out.push(format!(
                 "{new_nodes} new node(s), {:.1}s each on average",
                 ingest.as_secs_f64() / new_nodes as f64
+            ));
+        }
+        if self.pauses > 0 {
+            out.push(format!(
+                "Workbench paused {} time(s), {}s in all: the site answered slowly (adaptive_pause)",
+                self.pauses, self.paused_secs
             ));
         }
         if let Some((m, b, algo, file)) = &self.checksums {
@@ -833,6 +871,24 @@ fn fmt_dur(d: Duration) -> String {
     }
 }
 
+/// Time left in a step, from the pace of the records done so far up to the
+/// last one. A stall (a slow site, Workbench pausing) doesn't stretch the
+/// estimate: past twice the usual gap it says it's waiting instead.
+fn eta_text(started: Instant, last: Option<Instant>, pos: usize, total: usize) -> String {
+    let Some(last) = last.filter(|_| pos > 0) else { return String::new() };
+    let per = last.saturating_duration_since(started) / pos as u32;
+    let since = last.elapsed();
+    if since > (per * 2).max(Duration::from_secs(15)) {
+        return format!(", waiting on the site {}", fmt_dur(since));
+    }
+    let left = per.mul_f64(total.saturating_sub(pos) as f64).saturating_sub(since);
+    if left.is_zero() {
+        ", almost done".into()
+    } else {
+        format!(", about {} left", fmt_dur(left))
+    }
+}
+
 /// The progress bar with its text on it: black on cyan where it's filled,
 /// white on dark grey where it isn't, so every letter stays readable as the
 /// bar passes under it (a Gauge gives the label one colour, which vanishes
@@ -911,6 +967,29 @@ mod tests {
         assert_eq!(st, vec![(1, 1, 0), (1, 0, 1)]);
         assert_eq!(s.main_link().as_deref(), Some("https://h/node/5"));
         assert!(s.stats_lines().iter().any(|l| l == "Collection 2099_01 (new): https://h/node/5"));
+    }
+
+    #[test]
+    fn eta_counts_down_and_says_when_its_waiting() {
+        let now = Instant::now();
+        let start = now - Duration::from_secs(40);
+        // 4 of 10 done in 40s, the last just now: about 60s left.
+        let e = eta_text(start, Some(now), 4, 10);
+        assert!(e == ", about 1m00s left" || e == ", about 59s left", "{e}");
+        // The same, but nothing for 30s: waiting, not "2m15s left".
+        let last = now - Duration::from_secs(30);
+        let start = last - Duration::from_secs(40);
+        assert!(eta_text(start, Some(last), 4, 10).starts_with(", waiting on the site"));
+        assert_eq!(eta_text(start, None, 0, 10), "");
+    }
+
+    #[test]
+    fn pauses_show_on_the_bar_and_in_the_stats() {
+        let mut s = screen();
+        s.take(Msg::Paused(3));
+        s.take(Msg::Paused(3));
+        assert!(s.pause_note().contains("2 so far, 6s"));
+        assert!(s.stats_lines().iter().any(|l| l.contains("paused 2 time(s), 6s")));
     }
 
     #[test]
