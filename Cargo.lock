@@ -1337,6 +1337,7 @@ dependencies = [
  "dunce",
  "ratatui",
  "sacda-core",
+ "tempfile",
 ]
 
 [[package]]
