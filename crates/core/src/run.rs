@@ -412,7 +412,7 @@ fn check_step(cfg: &Config, dir: &Path, config: &str, name: &str, ev: &mut dyn F
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod pause_tests {
     use super::*;
 
@@ -435,7 +435,7 @@ mod pause_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod kill_tests {
     use super::*;
 
