@@ -126,16 +126,19 @@ impl Site {
         Ok(r.status().is_success())
     }
 
-    /// How many media a node has (Islandora's "media of" listing).
-    pub fn media_count(&self, nid: &str) -> Result<usize> {
+    /// The media IDs of a node (Islandora's "media of" listing, as the
+    /// signed-in user sees it - organise signs in as an admin).
+    pub fn media_ids(&self, nid: &str) -> Result<Vec<String>> {
         let url = format!("{}/node/{nid}/media?_format=json", self.host());
-        let r = self.get(&url)?;
-        let status = r.status();
-        if !status.is_success() {
-            bail!("{} answered {status} for {url}", self.host());
-        }
-        let v: Value = r.json().with_context(|| format!("{url} didn't return JSON"))?;
-        Ok(v.as_array().map_or(0, Vec::len))
+        let v = self.get_json(&url)?;
+        Ok(v.as_array()
+            .map(|a| a.iter().filter_map(|m| m["mid"][0]["value"].as_u64().map(|n| n.to_string())).collect())
+            .unwrap_or_default())
+    }
+
+    /// A node as Drupal's REST API gives it (field -> list of values).
+    pub fn node_json(&self, nid: &str) -> Result<Value> {
+        self.get_json(&format!("{}/node/{nid}?_format=json", self.host()))
     }
 
     /// Deletes one term: an ingest's rollback, and the only change organise

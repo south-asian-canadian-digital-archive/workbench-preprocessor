@@ -185,7 +185,7 @@ pub fn runnable_config(rollback: &Path, log: &Path) -> std::io::Result<PathBuf> 
             let reversed = p.with_file_name(name);
             let body: String = keep.iter().chain(data.iter()).map(|l| format!("{l}\n")).collect();
             if std::fs::write(&reversed, body).is_ok() {
-                out = out.replace(&csv, &reversed.to_string_lossy());
+                out = out.replace(&csv, &reversed.to_string_lossy().replace('\\', "/"));
             }
         }
     }

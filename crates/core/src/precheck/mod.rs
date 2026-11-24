@@ -190,6 +190,11 @@ pub struct Report {
     /// What to do with the items already on the site (from `Options`).
     pub update_columns: Vec<String>,
     pub replace_media: bool,
+    /// Replacing media: the media each node has now (deleted once the new file is in).
+    pub old_media: HashMap<String, Vec<String>>,
+    /// Updating fields: what the site has now for the chosen columns, by node
+    /// ID - saved in the bundle before anything is overwritten.
+    pub backup: Vec<(String, Vec<(String, String)>)>,
     /// Files in the access folder that no row uses.
     pub unmatched_files: Vec<std::path::PathBuf>,
     /// Unmatched files that could become items of their own: (identifier
@@ -237,8 +242,8 @@ pub struct Session {
     term_fields: HashMap<String, Result<Vec<String>, String>>,
     lang: Option<Result<HashMap<String, String>, String>>,
     nodes: HashMap<String, Option<NodeRef>>,
-    /// Media per node already on the site (None: the lookup failed).
-    media: HashMap<String, Option<usize>>,
+    /// Media IDs per node already on the site (None: the lookup failed).
+    media: HashMap<String, Option<Vec<String>>>,
     prefetched: std::collections::HashSet<String>,
     /// Collections whose "what's already on the site" lookup failed in this
     /// check, with the error. Not cached: the next check asks again.
@@ -355,45 +360,48 @@ impl Session {
         }
     }
 
-    /// How many media each of these nodes has (None: the lookup failed).
-    /// Asked once per node per session, a few at a time.
-    pub fn media_counts(&mut self, nids: &[String]) -> HashMap<String, Option<usize>> {
-        let todo: Vec<String> = nids.iter().filter(|n| !self.media.contains_key(*n)).cloned().collect();
-        if let (Some(site), false) = (self.site.as_ref(), todo.is_empty()) {
-            let done = std::sync::atomic::AtomicUsize::new(0);
-            let found = std::sync::Mutex::new(Vec::new());
-            let next = std::sync::atomic::AtomicUsize::new(0);
-            std::thread::scope(|sc| {
-                for _ in 0..6 {
-                    sc.spawn(|| {
-                        let _job = super::progress::enter(self.job.clone());
-                        loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(nid) = todo.get(i) else { break };
-                            if self.job.cancelled() {
-                                break;
-                            }
-                            let n = site.media_count(nid).ok();
-                            if let Ok(mut f) = found.lock() {
-                                f.push((nid.clone(), n));
-                            }
-                            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                            self.job.say(format!("checking the media of items already on the site ({d} of {})", todo.len()));
+    /// `fetch` for each node, a few at a time, saying how far it got. Never on
+    /// the screen's thread: a check runs on a worker.
+    fn per_node<T: Send>(&self, nids: &[String], what: &str, fetch: impl Fn(&Site, &str) -> anyhow::Result<T> + Sync) -> Vec<(String, Option<T>)> {
+        let Some(site) = self.site.as_ref() else { return vec![] };
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let found = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|sc| {
+            for _ in 0..6.min(nids.len()) {
+                sc.spawn(|| {
+                    let _job = super::progress::enter(self.job.clone());
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(nid) = nids.get(i) else { break };
+                        if self.job.cancelled() {
+                            break;
                         }
-                    });
-                }
-            });
-            for (nid, n) in found.into_inner().unwrap_or_default() {
-                // A failed lookup is asked again next time.
-                if n.is_some() {
-                    self.media.insert(nid.clone(), n);
-                }
-                self.media.entry(nid).or_insert(n);
+                        let got = fetch(site, nid).ok();
+                        if let Ok(mut f) = found.lock() {
+                            f.push((nid.clone(), got));
+                            self.job.say(format!("{what} ({} of {})", f.len(), nids.len()));
+                        }
+                    }
+                });
             }
+        });
+        found.into_inner().unwrap_or_default()
+    }
+
+    /// The media IDs of these nodes (None: the lookup failed). Asked once per
+    /// node per session - failures too, so a site that refuses isn't asked
+    /// again on every re-check (`r` starts a new session and asks again).
+    pub fn media_of(&mut self, nids: &[String]) -> HashMap<String, Option<Vec<String>>> {
+        let todo: Vec<String> = nids.iter().filter(|n| !self.media.contains_key(*n)).cloned().collect();
+        for (nid, got) in self.per_node(&todo, "looking up the media of items already on the site", |s, n| s.media_ids(n)) {
+            self.media.insert(nid, got);
         }
-        let out = nids.iter().map(|n| (n.clone(), self.media.get(n).copied().flatten())).collect();
-        self.media.retain(|_, v| v.is_some());
-        out
+        nids.iter().map(|n| (n.clone(), self.media.get(n).cloned().flatten())).collect()
+    }
+
+    /// These nodes as the site has them now (for a backup before an update).
+    pub fn node_values(&mut self, nids: &[String]) -> HashMap<String, Option<serde_json::Value>> {
+        self.per_node(nids, "saving the current values of items being updated", |s, n| s.node_json(n)).into_iter().collect()
     }
 
     /// The node already on the site with this identifier. The first lookup under

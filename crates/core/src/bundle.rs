@@ -214,7 +214,7 @@ pub fn write(cfg: &Config, site: &str, table: &Table, report: &Report, applied: 
                 || name == "precheck-report.txt"
                 || name == "items.config.yml"
                 || name == "components.config.yml"
-                || ["update", "delete-media"].iter().any(|s| name == format!("{s}.csv") || name == format!("{s}.config.yml"))
+                || ["update", "update-backup", "delete-old-media"].iter().any(|s| name == format!("{s}.csv") || name == format!("{s}.config.yml"))
                 || (name.starts_with("add-media") && (name.ends_with(".csv") || name.ends_with(".config.yml")))
                 || (name.starts_with("terms-") && (name.ends_with(".csv") || name.ends_with(".config.yml")));
             if ours && e.file_type().is_ok_and(|t| t.is_file()) {
@@ -579,8 +579,11 @@ struct Existing {
     media: usize,
 }
 
-/// update.csv (the chosen columns, by node ID), delete-media.csv (media being
-/// replaced) and add-media.csv (the file for each, replaced or missing).
+/// update.csv (the chosen columns, by node ID, after update-backup.csv saves
+/// what the site has now), add-media-<type>.csv (files for items already on
+/// the site: replacing their media, or where they have none), then
+/// delete-old-media.csv (the media being replaced - last, so a failed upload
+/// leaves the old media where it was).
 fn existing_steps(ctx: &Ctx, applied: &[Fix], dir: &Path) -> Result<Existing> {
     let report = ctx.report;
     let mut out = Existing { steps: vec![], updates: 0, media: 0 };
@@ -592,42 +595,53 @@ fn existing_steps(ctx: &Ctx, applied: &[Fix], dir: &Path) -> Result<Existing> {
             .into_iter()
             .filter(|(c, _)| report.update_columns.contains(c))
             .collect();
-        let title = report.update_columns.iter().any(|c| c == "title");
-        let mut w = csv::Writer::from_path(dir.join("update.csv"))?;
-        let mut header = vec!["node_id".to_string()];
-        if title {
-            header.push("title".into());
-        }
-        header.extend(cols.iter().map(|(c, _)| c.clone()));
-        w.write_record(&header)?;
-        for n in &on_site {
-            let (Some(id), Some(row)) = (nid(n), n.row) else { continue };
-            let mut rec = vec![id];
-            if title {
-                rec.push(n.title.clone());
+        // The sheet's own title, never one organise made up for a container.
+        let title = report.update_columns.iter().any(|c| c == "title") && ctx.table.col("title").is_some();
+        if title || !cols.is_empty() {
+            let mut w = csv::Writer::from_path(dir.join("update-backup.csv"))?;
+            let mut header = vec!["node_id".to_string()];
+            header.extend(report.update_columns.iter().cloned());
+            w.write_record(&header)?;
+            for (id, values) in &report.backup {
+                let mut rec = vec![id.clone()];
+                rec.extend(values.iter().map(|(_, v)| v.clone()));
+                w.write_record(&rec)?;
             }
-            rec.extend(cols.iter().map(|(c, d)| ctx.cell(row, c, d)));
-            w.write_record(&rec)?;
-            out.updates += 1;
+            w.flush()?;
+
+            let mut w = csv::Writer::from_path(dir.join("update.csv"))?;
+            let mut header = vec!["node_id".to_string()];
+            if title {
+                header.push("title".into());
+            }
+            header.extend(cols.iter().map(|(c, _)| c.clone()));
+            w.write_record(&header)?;
+            for n in &on_site {
+                let (Some(id), Some(row)) = (nid(n), n.row) else { continue };
+                let mut rec = vec![id];
+                if title {
+                    rec.push(ctx.table.get(&ctx.table.rows[row], "title").to_string());
+                }
+                rec.extend(cols.iter().map(|(c, d)| ctx.cell(row, c, d)));
+                w.write_record(&rec)?;
+                out.updates += 1;
+            }
+            w.flush()?;
         }
-        w.flush()?;
         if out.updates > 0 {
             out.steps.push(("update".into(), "task: update\ncontent_type: islandora_object\ninput_csv: update.csv\nupdate_mode: replace\nallow_adding_terms: false".into()));
         }
     }
     let one_file = |n: &Node| -> Option<String> { (n.files.len() == 1).then(|| n.files[0].path.as_ref().map(|p| csv_path(p))).flatten() };
     let mut add: Vec<(String, String)> = Vec::new();
+    let mut old: Vec<String> = Vec::new();
     if report.replace_media {
-        let replace: Vec<(String, String)> = on_site.iter().filter_map(|n| Some((nid(n)?, one_file(n)?))).collect();
-        if !replace.is_empty() {
-            let mut w = csv::Writer::from_path(dir.join("delete-media.csv"))?;
-            w.write_record(["node_id"])?;
-            for (id, _) in &replace {
-                w.write_record([id])?;
-            }
-            w.flush()?;
-            out.steps.push(("delete-media".into(), "task: delete_media_by_node\ninput_csv: delete-media.csv".into()));
-            add.extend(replace);
+        for n in &on_site {
+            let (Some(id), Some(f)) = (nid(n), one_file(n)) else { continue };
+            // Only nodes whose current media is known: nothing is deleted blind.
+            let Some(mids) = report.old_media.get(&id) else { continue };
+            old.extend(mids.iter().cloned());
+            add.push((id, f));
         }
     } else if applied.contains(&Fix::AddMedia) {
         add.extend(on_site.iter().filter(|n| report.missing_media.contains(&n.id)).filter_map(|n| Some((nid(n)?, one_file(n)?))));
@@ -636,8 +650,7 @@ fn existing_steps(ctx: &Ctx, applied: &[Fix], dir: &Path) -> Result<Existing> {
     let mut by_type: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
     for (id, f) in add {
         let ext = Path::new(&f).extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
-        let media = workbench_media_type(&ext);
-        by_type.entry(media).or_default().push((id, f));
+        by_type.entry(workbench_media_type(&ext)).or_default().push((id, f));
     }
     for (media, rows) in by_type {
         let name = format!("add-media-{media}");
@@ -653,8 +666,21 @@ fn existing_steps(ctx: &Ctx, applied: &[Fix], dir: &Path) -> Result<Existing> {
             format!("task: add_media\nmedia_type: {media}\ninput_csv: {name}.csv\nallow_missing_files: false\nfixity_algorithm: md5"),
         ));
     }
+    if !old.is_empty() {
+        let mut w = csv::Writer::from_path(dir.join("delete-old-media.csv"))?;
+        w.write_record(["media_id"])?;
+        for m in &old {
+            w.write_record([m])?;
+        }
+        w.flush()?;
+        out.steps.push((DELETE_OLD_MEDIA.into(), "task: delete_media\ninput_csv: delete-old-media.csv".into()));
+    }
     Ok(out)
 }
+
+/// The step that deletes replaced media. The run skips it unless every step
+/// before it worked.
+pub const DELETE_OLD_MEDIA: &str = "delete-old-media";
 
 /// The media type Workbench gives a file when it creates an item (its own
 /// default list, WorkbenchConfig.get_media_types), so a file added later lands
@@ -675,7 +701,7 @@ fn workbench_media_type(ext: &str) -> &'static str {
 /// the site: the title and the item fields (not the structural ones).
 pub fn updatable_columns(cfg: &Config, table: &Table, report: &Report) -> Vec<String> {
     let ctx = Ctx { cfg, table, report, subdelim: cfg.sacda.ingest.subdelimiter.clone() };
-    let mut cols = vec!["title".to_string()];
+    let mut cols: Vec<String> = table.col("title").map(|_| "title".to_string()).into_iter().collect();
     cols.extend(
         ctx.field_columns("islandora_object", &["title", "field_identifier", "field_model", "field_member_of", "field_weight"])
             .into_iter()

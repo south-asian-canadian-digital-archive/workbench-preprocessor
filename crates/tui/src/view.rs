@@ -385,7 +385,7 @@ fn update_popup(f: &mut Frame, r: &Review, area: Rect) {
         let style = if p.cursor == i { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() };
         Line::from(Span::styled(format!(" [{}] {text} ", if on { "x" } else { " " }), style))
     };
-    lines.push(row(0, p.media, "Replace their media with the file in the files folder".into()));
+    lines.push(row(0, p.media, "Replace their media with the file in the files folder (the old media and its derivatives are deleted once the new file is in)".into()));
     lines.push(Line::from(Span::styled(" Overwrite these fields from the sheet:", Style::new().fg(Color::DarkGray))));
     // Keep the cursor in view in a long column list.
     let room = area.height.saturating_sub(12) as usize;
@@ -395,7 +395,7 @@ fn update_popup(f: &mut Frame, r: &Review, area: Rect) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Nothing chosen = leave them as they are. The choice is used from the next re-check (c).",
+        "Overwritten values are saved in update-backup.csv first - an update can't be rolled back. Nothing chosen = leave them as they are. Used from the next re-check (c).",
         Style::new().fg(Color::DarkGray),
     )));
     let w = area.width.saturating_sub(8).min(96);

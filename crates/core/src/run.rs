@@ -40,7 +40,7 @@ fn is_record(line: &str) -> bool {
         || (t.starts_with("Node ") && t.contains("/node/") && (t.contains(" updated") || t.contains(" not updated")))
         || (t.starts_with("Media for \"") && t.contains(" created and added to "))
         || (t.starts_with("Media for ") && t.contains(" not created"))
-        || (t.starts_with("Node ") && t.contains("'s media ") && t.ends_with(" deleted."))
+        || (t.starts_with("Media ") && t.contains("/media/") && t.contains(" deleted."))
 }
 
 /// Rows a step's CSVs hold (its own, plus those of the tasks it covers).
@@ -294,6 +294,7 @@ pub fn rollback(cfg: &Config, site: &str, bundle: &str, groups: &[crate::rollbac
     groups.sort_by_key(|g| g.kind.order());
     let of = groups.len();
     let log = cfg.g_root.join("logs/organise").join(format!("{bundle}-rollback.log"));
+    let mut left_alone = 0;
     for (i, g) in groups.iter().enumerate() {
         // Per group: a failure stops the groups after it, which depend on this one.
         let mut failed = 0;
@@ -317,9 +318,10 @@ pub fn rollback(cfg: &Config, site: &str, bundle: &str, groups: &[crate::rollbac
                     };
                     match s.delete_term(tid, vocab, name) {
                         Ok(true) => ev(Event::Line(&format!("Term {tid} (\"{name}\") deleted."))),
-                        Ok(false) => ev(Event::Line(&format!(
-                            "Term {tid} isn't \"{name}\" in {vocab} any more - left alone"
-                        ))),
+                        Ok(false) => {
+                            left_alone += 1;
+                            ev(Event::Line(&format!("Term {tid} isn't \"{name}\" in {vocab} any more - left alone")))
+                        }
                         Err(e) => {
                             failed += 1;
                             ev(Event::Line(&format!("ERROR: term {tid} (\"{name}\") not deleted: {e:#}")));
@@ -331,6 +333,17 @@ pub fn rollback(cfg: &Config, site: &str, bundle: &str, groups: &[crate::rollbac
             _ => {
                 let Some(file) = &g.rollback else { continue };
                 let config = crate::rollback::runnable_config(file, &log).with_context(|| format!("can't read {}", file.display()))?;
+                // organise's copies (config, reversed CSV) go once it has run.
+                struct Tidy(Vec<std::path::PathBuf>);
+                impl Drop for Tidy {
+                    fn drop(&mut self) {
+                        for p in &self.0 {
+                            let _ = std::fs::remove_file(p);
+                        }
+                    }
+                }
+                let reversed = std::fs::read_to_string(&config).ok().and_then(|t| crate::rollback::yaml_value(&t, "input_csv")).map(std::path::PathBuf::from);
+                let _tidy = Tidy(std::iter::once(config.clone()).chain(reversed.filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("organise-")))).collect());
                 let ok = spawn_workbench(cfg, &config, false, &[], &mut |out| {
                     if let Out::Line(l) = out {
                         let t = l.trim_start();
@@ -358,7 +371,11 @@ pub fn rollback(cfg: &Config, site: &str, bundle: &str, groups: &[crate::rollbac
             );
         }
     }
-    ev(Event::Line("\nRollback finished."));
+    if left_alone > 0 {
+        ev(Event::Line(&format!("\nRollback finished - {left_alone} term(s) left alone (renamed or moved since the ingest).")));
+    } else {
+        ev(Event::Line("\nRollback finished."));
+    }
     Ok(())
 }
 
@@ -499,6 +516,13 @@ pub fn run_bundle_with(cfg: &Config, dir: &Path, check_only: bool, ev: &mut dyn 
     }
     let mut problems: Vec<String> = Vec::new();
     for step in &rest {
+        if step.name == crate::bundle::DELETE_OLD_MEDIA && !problems.is_empty() {
+            bail!(
+                "{} error(s) before deleting the replaced media - the old media was left in place (log: g/logs/organise/); \
+                 fix the errors and run again",
+                problems.len()
+            );
+        }
         let (ok, errors) = run(ev, step, &mut n)?;
         if !ok {
             bail!("{} failed - see the log under g/logs/organise/. Rollback files are in g/rollback/.", step.name);

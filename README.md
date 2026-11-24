@@ -134,12 +134,11 @@ If the ingest fails, an error panel opens. Press `c` to copy a debug report. Sen
 |---|---|
 | `y` / `n` | Use the fix / keep the value. |
 | `a` | Use all suggestions. |
-| `o` | Open the link. |
+| `u` | Items already on the site: update their fields or replace their media. |
 | `c` | Check again. |
-| `r` | Read the sheet again. |
-| `s` / `f` | Change the rows / the files folder. |
 | `w` / `i` | Write / write and ingest. |
 | `Tab`, `h` `l`, `1` `2` `3` | Change the view. |
+| `?` | Show all the keys. |
 | Esc | Go back. |
 
 **Ingest screen**
@@ -152,8 +151,21 @@ If the ingest fails, an error panel opens. Press `c` to copy a debug report. Sen
 | `v` | Show or hide the stats or the error. |
 | `o` | Open the collection. |
 | `c` | Copy the error report. |
+| `r` | Roll back what the ingest created. |
 
-The footer of each screen shows the keys you can use now. You can also use the mouse.
+The footer of each screen shows the keys you can use now. Press `?` to see all the keys. You can also use the mouse.
+
+### Run a sheet again
+
+You can check the same sheet again after an ingest stops, or to add more items:
+
+- organise skips the items that are already on the site.
+- If an item on the site has no media and its file is in the files folder, organise asks to upload the file.
+- To change items that are already on the site, press `u`. Select the fields to overwrite from the sheet, or select "Replace their media".
+
+### Undo an ingest
+
+After an ingest stops, fails or ends, press `r` on the ingest screen. Select what to delete: new terms, collections and series, items. organise deletes items first, then their collections, then the terms.
 
 ## Commands
 

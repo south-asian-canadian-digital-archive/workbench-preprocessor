@@ -680,52 +680,95 @@ fn existing_items(s: &mut Session, report: &mut Report) {
     if n == 0 {
         return;
     }
+    let nid_of = |i: &crate::tree::Node| report.on_site_nids.get(&i.id).cloned();
+    let on_site: Vec<&crate::tree::Node> = report.tree.of_kind(Kind::Item).filter(|i| report.on_site_items.contains(&i.id)).collect();
     // One file, and it's here: the only case a file can be added without guessing.
-    let with_file: Vec<(String, String)> = report
-        .tree
-        .of_kind(Kind::Item)
-        .filter(|i| report.on_site_items.contains(&i.id) && i.files.len() == 1 && i.files[0].path.is_some())
-        .filter_map(|i| Some((i.id.clone(), report.on_site_nids.get(&i.id)?.clone())))
+    let with_file: Vec<(String, String)> = on_site
+        .iter()
+        .filter(|i| i.files.len() == 1 && i.files[0].path.is_some())
+        .filter_map(|i| Some((i.id.clone(), nid_of(i)?)))
         .collect();
-    if !report.replace_media && !with_file.is_empty() {
-        let counts = s.media_counts(&with_file.iter().map(|(_, nid)| nid.clone()).collect::<Vec<_>>());
-        let mut missing: Vec<String> = with_file.iter().filter(|(_, nid)| counts.get(nid) == Some(&Some(0))).map(|(id, _)| id.clone()).collect();
-        missing.sort();
-        let failed = with_file.iter().filter(|(_, nid)| counts.get(nid).is_some_and(Option::is_none)).count();
+    let several = on_site.iter().filter(|i| i.files.len() > 1).count();
+    let all_nids: Vec<String> = on_site.iter().filter_map(|i| nid_of(i)).collect();
+    if !with_file.is_empty() {
+        let media = s.media_of(&with_file.iter().map(|(_, nid)| nid.clone()).collect::<Vec<_>>());
+        let failed = with_file.iter().filter(|(_, nid)| media.get(nid).is_some_and(Option::is_none)).count();
         if failed > 0 {
             report.findings.push(Finding::new(
                 Warning,
                 "files",
-                format!("couldn't look up the media of {failed} item(s) already on the site - re-check (r) to try again"),
+                format!("couldn't look up the media of {failed} item(s) already on the site - r reads the site again"),
             ));
         }
-        if !missing.is_empty() {
-            let shown: Vec<&str> = missing.iter().take(5).map(String::as_str).collect();
-            let more = if missing.len() > 5 { format!(", +{} more", missing.len() - 5) } else { String::new() };
-            report.findings.push(
-                Finding::new(
-                    Warning,
-                    "files",
-                    format!(
-                        "{} item(s) are on the site without any media, and their file is in the files folder ({}{more}) - upload it to them?",
-                        missing.len(),
-                        shown.join(", ")
-                    ),
-                )
-                .with_fix(Fix::AddMedia, false),
-            );
-            report.missing_media = missing;
+        if report.replace_media {
+            report.old_media = with_file.iter().filter_map(|(_, nid)| Some((nid.clone(), media.get(nid)?.clone()?))).collect();
+        } else {
+            let mut missing: Vec<String> = with_file
+                .iter()
+                .filter(|(_, nid)| media.get(nid).is_some_and(|m| m.as_ref().is_some_and(Vec::is_empty)))
+                .map(|(id, _)| id.clone())
+                .collect();
+            missing.sort();
+            if !missing.is_empty() {
+                let shown: Vec<&str> = missing.iter().take(5).map(String::as_str).collect();
+                let more = if missing.len() > 5 { format!(", +{} more", missing.len() - 5) } else { String::new() };
+                report.findings.push(
+                    Finding::new(
+                        Warning,
+                        "files",
+                        format!(
+                            "{} item(s) are on the site without any media, and their file is in the files folder ({}{more}) - upload it to them?",
+                            missing.len(),
+                            shown.join(", ")
+                        ),
+                    )
+                    .with_fix(Fix::AddMedia, false),
+                );
+                report.missing_media = missing;
+            }
         }
+    }
+    if several > 0 && (report.replace_media || !report.missing_media.is_empty()) {
+        report.findings.push(Finding::new(
+            Info,
+            "files",
+            format!("{several} item(s) already on the site have several files (compound) - their media is left as it is"),
+        ));
+    }
+    if !report.update_columns.is_empty() {
+        // The values being overwritten, saved first: an update has no undo.
+        let now = s.node_values(&all_nids);
+        let failed = all_nids.iter().filter(|nid| now.get(*nid).is_none_or(Option::is_none)).count();
+        if failed > 0 {
+            report.findings.push(Finding::new(
+                Error,
+                "structure",
+                format!("couldn't read the current values of {failed} item(s) being updated (they're saved before an update) - r reads the site again"),
+            ));
+        }
+        report.backup = all_nids
+            .iter()
+            .filter_map(|nid| {
+                let v = now.get(nid)?.as_ref()?;
+                Some((nid.clone(), report.update_columns.iter().map(|c| (c.clone(), v.get(c).map(|x| x.to_string()).unwrap_or_default())).collect()))
+            })
+            .collect();
     }
     let mut what = Vec::new();
     if !report.update_columns.is_empty() {
-        what.push(format!("their {} updated from the sheet", report.update_columns.join(", ")));
+        what.push(format!(
+            "their {} overwritten from the sheet (the current values are saved in update-backup.csv; an update can't be rolled back)",
+            report.update_columns.join(", ")
+        ));
     }
     if report.replace_media {
-        what.push(format!("the media of the {} with their file here replaced", with_file.len()));
+        what.push(format!(
+            "the media of the {} with their one file here replaced (the new file goes in first; the old media and its derivatives are deleted only if every upload worked)",
+            report.old_media.len()
+        ));
     }
     report.findings.push(Finding::new(
-        Info,
+        if what.is_empty() { Info } else { Warning },
         "structure",
         if what.is_empty() {
             format!("{n} item(s) are already on the site and left out - to change them instead, choose what to update (u on the screen, --update / --replace-media otherwise)")

@@ -167,6 +167,8 @@ impl Review {
         let undecided = self.undecided();
         if self.changes > 0 {
             Some(format!("{} change(s) not checked yet - press c to re-check", self.changes))
+        } else if self.update_cols != self.report.update_columns || self.replace_media != self.report.replace_media {
+            Some("the choice for items already on the site isn't checked yet - press c to re-check".into())
         } else if undecided > 0 {
             Some(format!("{undecided} suggestion(s) to decide (y use / n keep)"))
         } else if errors > 0 {
@@ -276,6 +278,9 @@ pub struct App {
     pub folder_hint: Option<Vec<String>>,
     /// The `?` list of every key on this screen is open.
     pub help: bool,
+    /// What to change on items already on the site, per sheet, so a new
+    /// review of the same sheet (a reopen, other rows) keeps the choice.
+    pub update_choice: HashMap<String, (Vec<String>, bool)>,
     /// The system folder window, while it's open.
     pub picker_rx: Option<mpsc::Receiver<Result<Option<PathBuf>, String>>>,
 }
@@ -450,6 +455,7 @@ impl App {
             count_rx,
             folder_hint: None,
             help: false,
+            update_choice: HashMap::new(),
             picker_rx: None,
             pending_input: start.input.clone(),
             start,
@@ -593,11 +599,8 @@ impl App {
             collection_title: self.start.collection_title.clone(),
             offline: false,
             files_by_identifier: self.by_identifier(Some(input)),
-            update_columns: match &self.screen {
-                Screen::Review(r) if r.input_name == input => r.update_cols.clone(),
-                _ => Vec::new(),
-            },
-            replace_media: matches!(&self.screen, Screen::Review(r) if r.input_name == input && r.replace_media),
+            update_columns: self.update_choice.get(input).map(|c| c.0.clone()).unwrap_or_default(),
+            replace_media: self.update_choice.get(input).is_some_and(|c| c.1),
         }
     }
 
@@ -817,6 +820,7 @@ impl App {
                 );
             }
             Ok(Done::Opened { input, full, table, session, settled, accepted }) => {
+                let choice = self.update_choice.get(&input).cloned().unwrap_or_default();
                 // A check downloads a link again: keep its name up to date (older entries had none).
                 if let Some(t) = sacda::input::sheet_title(&input) {
                     if self.sheets.get(&input).is_some_and(|e| e.title != t) {
@@ -841,8 +845,8 @@ impl App {
                     changes: 0,
                     no_link: HashSet::new(),
                     term_sel: 0,
-                    update_cols: Vec::new(),
-                    replace_media: false,
+                    update_cols: choice.0,
+                    replace_media: choice.1,
                     picker: None,
                     list_offset: Cell::new(0),
                     term_offset: Cell::new(0),
@@ -1483,6 +1487,7 @@ fn handle(app: &mut App, term: &mut Term, key: KeyEvent) -> Result<Flow> {
                         if cols != r.update_cols || media != r.replace_media {
                             r.changes += 1;
                         }
+                        app.update_choice.insert(r.input_name.clone(), (cols.clone(), media));
                         r.update_cols = cols;
                         r.replace_media = media;
                         r.picker = None;
